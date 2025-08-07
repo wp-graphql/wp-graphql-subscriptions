@@ -1,0 +1,275 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>GraphQL-SSE Protocol Test</title>
+    <style>
+        body { font-family: Arial, sans-serif; margin: 20px; }
+        .container { max-width: 800px; margin: 0 auto; }
+        .section { margin: 20px 0; padding: 15px; border: 1px solid #ddd; border-radius: 5px; }
+        .log { background: #f5f5f5; padding: 10px; font-family: monospace; white-space: pre-wrap; max-height: 200px; overflow-y: auto; }
+        button { padding: 10px 15px; margin: 5px; background: #007cba; color: white; border: none; border-radius: 3px; cursor: pointer; }
+        button:hover { background: #005a87; }
+        input, textarea { width: 100%; padding: 8px; margin: 5px 0; }
+        .status { padding: 10px; margin: 5px 0; border-radius: 3px; }
+        .status.success { background: #d4edda; color: #155724; }
+        .status.error { background: #f8d7da; color: #721c24; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>GraphQL-SSE Protocol Test</h1>
+        
+        <div class="section">
+            <h2>1. Single Connection Mode Test</h2>
+            <p>This tests the GraphQL-SSE protocol in single connection mode with reservations.</p>
+            
+            <div>
+                <button onclick="makeReservation()">1. Make Reservation (PUT)</button>
+                <div id="reservationStatus" class="status"></div>
+                <div id="reservationLog" class="log"></div>
+            </div>
+            
+            <div>
+                <button onclick="establishSSE()" disabled id="sseButton">2. Establish SSE Connection (GET)</button>
+                <div id="sseStatus" class="status"></div>
+                <div id="sseLog" class="log"></div>
+            </div>
+            
+            <div>
+                <button onclick="executeOperation()" disabled id="executeButton">3. Execute GraphQL Operation (POST)</button>
+                <div id="executeStatus" class="status"></div>
+                <div id="executeLog" class="log"></div>
+            </div>
+            
+            <div>
+                <button onclick="stopOperation()" disabled id="stopButton">4. Stop Operation (DELETE)</button>
+                <div id="stopStatus" class="status"></div>
+                <div id="stopLog" class="log"></div>
+            </div>
+        </div>
+        
+        <div class="section">
+            <h2>2. Distinct Connections Mode Test</h2>
+            <p>This tests the GraphQL-SSE protocol in distinct connections mode (direct SSE).</p>
+            
+            <div>
+                <button onclick="testDistinctMode()">Execute with SSE Content-Type</button>
+                <div id="distinctStatus" class="status"></div>
+                <div id="distinctLog" class="log"></div>
+            </div>
+        </div>
+        
+        <div class="section">
+            <h2>GraphQL Query</h2>
+            <textarea id="graphqlQuery" rows="6" placeholder="Enter your GraphQL subscription query">
+subscription {
+  postUpdated {
+    id
+    title
+    status
+  }
+}</textarea>
+            <input type="text" id="operationId" placeholder="Operation ID (for single connection mode)" value="test-subscription-001">
+        </div>
+    </div>
+
+    <script>
+        let reservationToken = null;
+        let eventSource = null;
+        let currentOperationId = null;
+
+        function log(elementId, message) {
+            const element = document.getElementById(elementId);
+            element.textContent += new Date().toISOString() + ': ' + message + '\n';
+            element.scrollTop = element.scrollHeight;
+        }
+
+        function setStatus(elementId, message, isError = false) {
+            const element = document.getElementById(elementId);
+            element.textContent = message;
+            element.className = 'status ' + (isError ? 'error' : 'success');
+        }
+
+        async function makeReservation() {
+            try {
+                log('reservationLog', 'Making reservation request...');
+                
+                const response = await fetch('/graphql/stream', {
+                    method: 'PUT',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    }
+                });
+                
+                if (response.ok) {
+                    reservationToken = await response.text();
+                    log('reservationLog', 'Reservation token: ' + reservationToken);
+                    setStatus('reservationStatus', 'Reservation successful');
+                    document.getElementById('sseButton').disabled = false;
+                } else {
+                    const error = await response.text();
+                    log('reservationLog', 'Error: ' + error);
+                    setStatus('reservationStatus', 'Reservation failed', true);
+                }
+            } catch (error) {
+                log('reservationLog', 'Network error: ' + error.message);
+                setStatus('reservationStatus', 'Network error', true);
+            }
+        }
+
+        function establishSSE() {
+            if (!reservationToken) {
+                setStatus('sseStatus', 'No reservation token', true);
+                return;
+            }
+
+            try {
+                log('sseLog', 'Establishing SSE connection...');
+                
+                eventSource = new EventSource('/graphql/stream?token=' + encodeURIComponent(reservationToken));
+                
+                eventSource.onopen = function(event) {
+                    log('sseLog', 'SSE connection opened');
+                    setStatus('sseStatus', 'Connected');
+                    document.getElementById('executeButton').disabled = false;
+                    document.getElementById('stopButton').disabled = false;
+                };
+                
+                eventSource.addEventListener('next', function(event) {
+                    log('sseLog', 'Received next event: ' + event.data);
+                });
+                
+                eventSource.addEventListener('complete', function(event) {
+                    log('sseLog', 'Received complete event: ' + event.data);
+                });
+                
+                eventSource.onerror = function(event) {
+                    log('sseLog', 'SSE error occurred');
+                    setStatus('sseStatus', 'Connection error', true);
+                };
+                
+            } catch (error) {
+                log('sseLog', 'Error establishing SSE: ' + error.message);
+                setStatus('sseStatus', 'Connection failed', true);
+            }
+        }
+
+        async function executeOperation() {
+            if (!reservationToken) {
+                setStatus('executeStatus', 'No reservation token', true);
+                return;
+            }
+
+            try {
+                const query = document.getElementById('graphqlQuery').value;
+                const operationId = document.getElementById('operationId').value;
+                currentOperationId = operationId;
+                
+                log('executeLog', 'Executing GraphQL operation...');
+                
+                const response = await fetch('/graphql/stream', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'X-GraphQL-Event-Stream-Token': reservationToken
+                    },
+                    body: JSON.stringify({
+                        query: query,
+                        extensions: {
+                            operationId: operationId
+                        }
+                    })
+                });
+                
+                const result = await response.text();
+                log('executeLog', 'Response (' + response.status + '): ' + result);
+                
+                if (response.status === 202) {
+                    setStatus('executeStatus', 'Operation accepted');
+                } else {
+                    setStatus('executeStatus', 'Operation failed', true);
+                }
+                
+            } catch (error) {
+                log('executeLog', 'Network error: ' + error.message);
+                setStatus('executeStatus', 'Network error', true);
+            }
+        }
+
+        async function stopOperation() {
+            if (!reservationToken || !currentOperationId) {
+                setStatus('stopStatus', 'No reservation token or operation ID', true);
+                return;
+            }
+
+            try {
+                log('stopLog', 'Stopping operation...');
+                
+                const response = await fetch('/graphql/stream?operationId=' + encodeURIComponent(currentOperationId), {
+                    method: 'DELETE',
+                    headers: {
+                        'X-GraphQL-Event-Stream-Token': reservationToken
+                    }
+                });
+                
+                const result = await response.text();
+                log('stopLog', 'Response (' + response.status + '): ' + result);
+                
+                if (response.ok) {
+                    setStatus('stopStatus', 'Operation stopped');
+                } else {
+                    setStatus('stopStatus', 'Stop failed', true);
+                }
+                
+            } catch (error) {
+                log('stopLog', 'Network error: ' + error.message);
+                setStatus('stopStatus', 'Network error', true);
+            }
+        }
+
+        async function testDistinctMode() {
+            try {
+                const query = document.getElementById('graphqlQuery').value;
+                
+                log('distinctLog', 'Testing distinct connections mode...');
+                
+                const response = await fetch('/graphql/stream', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'text/event-stream',
+                        'Accept': 'text/event-stream'
+                    },
+                    body: JSON.stringify({
+                        query: query
+                    })
+                });
+                
+                if (response.ok) {
+                    setStatus('distinctStatus', 'Streaming...');
+                    
+                    const reader = response.body.getReader();
+                    const decoder = new TextDecoder();
+                    
+                    while (true) {
+                        const { done, value } = await reader.read();
+                        if (done) break;
+                        
+                        const chunk = decoder.decode(value);
+                        log('distinctLog', 'Received: ' + chunk);
+                    }
+                    
+                    setStatus('distinctStatus', 'Stream completed');
+                } else {
+                    const error = await response.text();
+                    log('distinctLog', 'Error: ' + error);
+                    setStatus('distinctStatus', 'Request failed', true);
+                }
+                
+            } catch (error) {
+                log('distinctLog', 'Network error: ' + error.message);
+                setStatus('distinctStatus', 'Network error', true);
+            }
+        }
+    </script>
+</body>
+</html>

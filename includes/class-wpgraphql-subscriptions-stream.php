@@ -24,79 +24,244 @@ class WPGraphQL_Subscriptions_Stream {
     private $last_check_time;
 
     /**
-     * Constructor for the Stream class.
+     * Constructor for the GraphQL-SSE Stream
      *
-     * @param string $connection_id The unique identifier for this connection stream.
+     * @param string $connection_id The reservation token/connection ID
+     * @throws InvalidArgumentException If connection_id is empty
      */
     public function __construct( string $connection_id ) {
+        
+        if ( empty( $connection_id ) ) {
+            throw new InvalidArgumentException( 'Connection ID cannot be empty' );
+        }
+        
         $this->connection_id = $connection_id;
         $this->event_queue = WPGraphQL_Event_Queue::get_instance();
-        $this->last_check_time = microtime(true);
-        
-        if ( ! $this->connection_id ) {
-            return;
-        }
+        $this->last_check_time = microtime( true );
 
-        // Close the session to prevent blocking other requests.
-        if ( session_status() === PHP_SESSION_ACTIVE ) {
-            session_write_close();
-        }
-
+        // Start the stream immediately
         $this->stream();
     }
 
     /**
-     * In single connection mode, the stream is generic and doesn't need to load
-     * any specific subscription data. It just delivers events for its connection ID.
-     * This method is kept for clarity but is no longer strictly necessary.
+     * Validate and initialize the connection
+     * 
+     * @return array Connection metadata
+     * @throws InvalidArgumentException If connection is invalid
      */
-    private function get_connection_data() {
-        // In the future, this could be used to validate the connection ID
-        // or load connection-specific settings. For now, we just log.
-        error_log( "WPGraphQL Subscriptions DEBUG: Starting stream for connection {$this->connection_id}" );
-        return ['id' => $this->connection_id];
+    private function validate_connection() {
+        
+        if ( empty( $this->connection_id ) ) {
+            throw new InvalidArgumentException( 'Connection ID cannot be empty' );
+        }
+        
+        // Validate reservation token exists and is not expired
+        if ( ! validate_reservation_token( $this->connection_id ) ) {
+            throw new InvalidArgumentException( 'Invalid or expired reservation token' );
+        }
+        
+        $this->log_info( "Starting GraphQL-SSE stream for connection {$this->connection_id}" );
+        
+        return [
+            'id' => $this->connection_id,
+            'started_at' => microtime( true ),
+            'protocol' => 'GraphQL-SSE'
+        ];
     }
     
     /**
-     * Send a subscription event to the client using GraphQL over SSE protocol.
+     * Process and send GraphQL-SSE events
      * 
-     * Emits 'next' events containing GraphQL ExecutionResult-compatible data
-     * according to the GraphQL over SSE specification for single connection mode.
-     * The event data will include the operationId for client-side routing.
-     * 
-     * @param array $event The event data containing type, data, and timestamp.
-     * @return bool True if the event was sent successfully.
-     * 
-     * @see https://github.com/enisdenjo/graphql-sse/blob/master/PROTOCOL.md
+     * @param array $event The event data
+     * @return bool True if the event was sent successfully
      */
-    private function send_subscription_event( $event ) {
+    private function process_event( array $event ): bool {
+        
+        if ( ! $this->validate_event( $event ) ) {
+            return false;
+        }
         
         try {
-            error_log( "WPGraphQL Subscriptions DEBUG: Stream attempting to send event: " . wp_json_encode( array_keys( $event ) ) );
+            // Handle GraphQL operation results (single connection mode)
+            if ( $event['type'] === 'graphql_operation_result' ) {
+                return $this->send_operation_result( $event );
+            }
             
-            if ( empty( $event['type'] ) || empty( $event['data'] ) ) {
-                error_log( "WPGraphQL Subscriptions DEBUG: Stream event missing type or data" );
+            // Handle subscription events - these should have operation IDs
+            if ( empty( $event['operation_id'] ) ) {
+                $this->log_warning( "Event missing operation_id, skipping: " . $event['type'] );
                 return false;
             }
             
-            // Convert internal event data to GraphQL ExecutionResult format
             $execution_result = $this->convert_to_execution_result( $event );
+            $this->send_next_event( $event['operation_id'], $execution_result );
             
-            // Emit 'next' event as per GraphQL over SSE protocol
-            echo "event: next\n";
-            echo "data: " . wp_json_encode( $execution_result ) . "\n\n";
-            
-            error_log( "WPGraphQL Subscriptions DEBUG: Stream successfully sent 'next' event for {$event['type']}" );
-            
+            $this->log_debug( "Sent GraphQL-SSE event for operation {$event['operation_id']}" );
             return true;
             
         } catch ( \Exception $e ) {
-            error_log( "WPGraphQL Subscriptions ERROR: Stream failed to send event: " . $e->getMessage() );
-            return false;
-        } catch ( \Error $e ) {
-            error_log( "WPGraphQL Subscriptions ERROR: Stream fatal error sending event: " . $e->getMessage() );
+            $this->log_error( "Failed to process event: " . $e->getMessage() );
             return false;
         }
+    }
+    
+    /**
+     * Validate event data structure
+     * 
+     * @param array $event
+     * @return bool
+     */
+    private function validate_event( array $event ): bool {
+        
+        if ( empty( $event['type'] ) ) {
+            $this->log_warning( "Event missing required 'type' field" );
+            return false;
+        }
+        
+        if ( empty( $event['data'] ) ) {
+            $this->log_warning( "Event missing required 'data' field" );
+            return false;
+        }
+        
+        return true;
+    }
+    
+    /**
+     * Send GraphQL operation result for single connection mode
+     * 
+     * @param array $event The operation result event
+     * @return bool True if sent successfully
+     */
+    private function send_operation_result( array $event ): bool {
+        
+        $event_data = $event['data'];
+        
+        // Check if this operation result is for our connection
+        if ( $event_data['token'] !== $this->connection_id ) {
+            return false; // Not for this connection
+        }
+        
+        $operation_id = $event_data['operation_id'];
+        $result = $event_data['result'];
+        
+        // Send 'next' event with operation ID
+        $this->send_next_event( $operation_id, $result );
+        
+        // For non-subscription operations, immediately send complete
+        if ( ! $this->is_subscription_operation( $operation_id ) ) {
+            $this->send_complete_event( $operation_id );
+        }
+        
+        return true;
+    }
+    
+    /**
+     * Send 'next' event according to GraphQL-SSE protocol
+     * 
+     * @param string $operation_id The operation ID
+     * @param array $payload The GraphQL execution result
+     */
+    private function send_next_event( string $operation_id, array $payload ): void {
+        
+        $message = [
+            'id' => $operation_id,
+            'payload' => $payload
+        ];
+        
+        $this->send_sse_event( 'next', $message );
+    }
+    
+    /**
+     * Send 'complete' event for an operation
+     * 
+     * @param string $operation_id The operation ID
+     */
+    private function send_complete_event( string $operation_id ): void {
+        
+        $message = [
+            'id' => $operation_id
+        ];
+        
+        $this->send_sse_event( 'complete', $message );
+    }
+    
+    /**
+     * Send SSE event according to GraphQL-SSE protocol
+     * 
+     * @param string $event_type The event type ('next', 'complete')
+     * @param array|null $data The event data
+     */
+    private function send_sse_event( string $event_type, ?array $data = null ): void {
+        
+        echo "event: {$event_type}\n";
+        
+        if ( $data !== null ) {
+            echo "data: " . wp_json_encode( $data ) . "\n";
+        } else {
+            echo "data: \n"; // Empty data field for complete events
+        }
+        
+        echo "\n";
+        
+        if ( ob_get_level() ) {
+            ob_flush();
+        }
+        flush();
+    }
+    
+    /**
+     * Check if an operation is a subscription
+     * 
+     * @param string $operation_id The operation ID
+     * @return bool True if it's a subscription
+     */
+    private function is_subscription_operation( string $operation_id ): bool {
+        
+        // For now, assume all operations are subscriptions
+        // In a real implementation, you would check the operation type from stored operation data
+        return true;
+    }
+    
+    /**
+     * Structured logging methods
+     */
+    private function log_info( string $message, array $context = [] ): void {
+        $this->log( 'info', $message, $context );
+    }
+    
+    private function log_warning( string $message, array $context = [] ): void {
+        $this->log( 'warning', $message, $context );
+    }
+    
+    private function log_error( string $message, array $context = [] ): void {
+        $this->log( 'error', $message, $context );
+    }
+    
+    private function log_debug( string $message, array $context = [] ): void {
+        $this->log( 'debug', $message, $context );
+    }
+    
+    /**
+     * Central logging method
+     * 
+     * @param string $level
+     * @param string $message
+     * @param array $context
+     */
+    private function log( string $level, string $message, array $context = [] ): void {
+        
+        $log_entry = [
+            'timestamp' => gmdate( 'Y-m-d H:i:s' ),
+            'level' => strtoupper( $level ),
+            'connection_id' => $this->connection_id,
+            'message' => $message
+        ];
+        
+        if ( ! empty( $context ) ) {
+            $log_entry['context'] = $context;
+        }
+        
+        error_log( 'WPGraphQL-SSE: ' . wp_json_encode( $log_entry ) );
     }
     
     /**
@@ -147,135 +312,155 @@ class WPGraphQL_Subscriptions_Stream {
     }
 
     /**
-     * Send a ping event to keep the connection alive.
+     * Send a keepalive comment to maintain the connection
+     * Uses SSE comments to stay protocol compliant
      */
-    private function send_ping() {
-        echo "event: ping\n";
-        $current_time = gmdate( DATE_ATOM );
-        $process_id = getmypid();
-        echo 'data: {"time": "' . $current_time . '", "connection_id": "' . $this->connection_id . '", "pid": "' . $process_id . '"}' . "\n\n";
-    }
-
-    /**
-     * Clean up subscription data when the stream is closed.
-     * In single connection mode, we don't clean up individual subscriptions here,
-     * as the client manages their lifecycle via HTTP requests. We just log the closure.
-     */
-    private function cleanup_subscription() {
-        error_log( "WPGraphQL Subscriptions DEBUG: Stream connection closed for {$this->connection_id}" );
-    }
-
-    /**
-     * Start the Server-Sent Events stream.
-     * 
-     * This method initializes an event stream that will continuously check for
-     * queued subscription events and send them to the client. It maintains a
-     * persistent connection using Server-Sent Events (SSE) protocol.
-     */
-    public function stream() {
-
-        // Set up Server-Sent Events headers
-        if ( ! headers_sent() ) {
-            ini_set( 'output_buffering', 0 );
-            ini_set( 'implicit_flush', 1 );
-            header( 'Content-Type: text/event-stream' );
-            header( 'Cache-Control: no-cache' );
-            header( 'Connection: keep-alive' );
-            header( "X-Accel-Buffering: no" );
+    private function send_keepalive(): void {
+        echo ": keepalive " . gmdate( DATE_ATOM ) . "\n\n";
+        
+        if ( ob_get_level() ) {
+            ob_flush();
         }
+        flush();
+    }
 
-        // Ensure session is closed
-        if (session_id()) {
+    /**
+     * Clean up connection resources
+     */
+    private function cleanup_connection(): void {
+        $this->log_info( "GraphQL-SSE connection closed", [
+            'duration' => microtime( true ) - $this->last_check_time
+        ]);
+        
+        // Clean up reservation token
+        delete_transient( 'graphql_sse_reservation_' . $this->connection_id );
+    }
+
+    /**
+     * Start the GraphQL-SSE stream
+     * 
+     * Initializes and maintains a Server-Sent Events stream according to the GraphQL-SSE protocol
+     */
+    public function stream(): void {
+        
+        try {
+            // Validate connection before starting
+            $connection_meta = $this->validate_connection();
+            
+            // Set up SSE headers
+            $this->setup_sse_headers();
+            
+            // Initialize stream state
+            $keepalive_counter = 0;
+            $start_time = microtime( true );
+            
+            // Send connection established comment
+            echo ": GraphQL-SSE connection established for {$this->connection_id}\n\n";
+            flush();
+            
+            $this->log_info( "GraphQL-SSE stream started" );
+            
+            // Main event loop
+            while ( connection_status() === CONNECTION_NORMAL ) {
+                
+                // Process queued events
+                $events_processed = $this->process_queued_events();
+                
+                // Send keepalive every 30 seconds
+                $keepalive_counter++;
+                if ( $keepalive_counter >= 30 ) {
+                    $this->send_keepalive();
+                    $keepalive_counter = 0;
+                }
+                
+                // Check for client disconnect
+                if ( connection_aborted() ) {
+                    $this->log_info( "Client disconnected from stream" );
+                    break;
+                }
+                
+                // Sleep for 1 second between checks
+                sleep( 1 );
+            }
+            
+        } catch ( \Exception $e ) {
+            $this->log_error( "Stream error: " . $e->getMessage() );
+            
+            // Send error to client if possible
+            if ( connection_status() === CONNECTION_NORMAL ) {
+                echo ": error " . $e->getMessage() . "\n\n";
+                flush();
+            }
+            
+        } finally {
+            // Always cleanup
+            $this->cleanup_connection();
+        }
+    }
+    
+    /**
+     * Set up Server-Sent Events headers
+     */
+    private function setup_sse_headers(): void {
+        
+        if ( headers_sent() ) {
+            throw new \RuntimeException( 'Headers already sent, cannot establish SSE connection' );
+        }
+        
+        // Disable output buffering for real-time streaming
+        ini_set( 'output_buffering', 0 );
+        ini_set( 'implicit_flush', 1 );
+        
+        // Set SSE headers
+        header( 'Content-Type: text/event-stream' );
+        header( 'Cache-Control: no-cache' );
+        header( 'Connection: keep-alive' );
+        header( 'X-Accel-Buffering: no' );
+        
+        // Ensure session is closed to prevent blocking
+        if ( session_id() ) {
             session_write_close();
         }
-        
-        $process_id = getmypid();
-        $ping_counter = 0;
-        
-        error_log("WPGraphQL Subscriptions: Starting SSE stream for connection {$this->connection_id} on process {$process_id}");
-        
-        // Send initial connection confirmation
-        echo "event: connected\n";
-        echo 'data: {"connection_id": "' . $this->connection_id . '", "pid": "' . $process_id . '"}' . "\n\n";
-        flush();
-        
-        while (connection_status() === CONNECTION_NORMAL) {
-            
-            // Check for new events using database queue
-            $this->process_queued_events();
-            
-            // Send ping every 30 seconds to keep connection alive
-            $ping_counter++;
-            if ($ping_counter >= 30) {
-                $this->send_ping();
-                $ping_counter = 0;
-            } else {
-                // Send heartbeat every second
-                echo "event: heartbeat\n";
-                echo 'data: {"time": "' . date(DATE_ISO8601) . '", "pid": "' . $process_id . '"}' . "\n\n";
-            }
-            
-            // Flush output
-            if (ob_get_level()) {
-                ob_end_flush();
-            }
-            flush();
-
-            // Check if client disconnected
-            if (connection_aborted()) {
-                error_log("WPGraphQL Subscriptions: Client disconnected from stream {$this->connection_id}");
-                break;
-            }
-
-            sleep(1);
-        }
-        
-        // Cleanup when stream ends
-        $this->cleanup_subscription();
     }
 
     /**
-     * Process any queued events for this subscription stream using database queue.
+     * Process queued events from the database
      * 
-     * Checks the database for events since the last check and sends them to the client.
-     * 
-     * @return bool True if events were processed, false otherwise.
+     * @return int Number of events processed
      */
-    private function process_queued_events() {
+    private function process_queued_events(): int {
         
         try {
             // Get events from database since last check
-            $events = $this->event_queue->get_events_since($this->last_check_time);
+            $events = $this->event_queue->get_events_since( $this->last_check_time );
             
-            if (empty($events)) {
-                return false;
+            if ( empty( $events ) ) {
+                return 0;
             }
             
-            error_log("WPGraphQL Subscriptions DEBUG: Found " . count($events) . " events to process");
+            $this->log_debug( "Processing events", [ 'count' => count( $events ) ] );
             
             $processed_count = 0;
             
             // Process each event
-            foreach ($events as $event) {
-                error_log("WPGraphQL Subscriptions DEBUG: Processing event: " . wp_json_encode($event));
-                
-                if ($this->send_subscription_event($event)) {
+            foreach ( $events as $event ) {
+                if ( $this->process_event( $event ) ) {
                     $processed_count++;
                 }
             }
             
             // Update last check time
-            $this->last_check_time = microtime(true);
+            $this->last_check_time = microtime( true );
             
-            if ($processed_count > 0) {
-                error_log("WPGraphQL Subscriptions DEBUG: Successfully processed {$processed_count} events");
-                return true;
+            if ( $processed_count > 0 ) {
+                $this->log_info( "Processed events", [ 'count' => $processed_count ] );
             }
             
-        } catch (Exception $e) {
-            error_log("WPGraphQL Subscriptions ERROR: Failed to process queued events: " . $e->getMessage());
+            return $processed_count;
+            
+        } catch ( \Exception $e ) {
+            $this->log_error( "Failed to process queued events: " . $e->getMessage() );
+            return 0;
         }
-        
-        return false;
     }
 }
