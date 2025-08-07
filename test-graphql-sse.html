@@ -31,6 +31,7 @@
             
             <div>
                 <button onclick="establishSSE()" disabled id="sseButton">2. Establish SSE Connection (GET)</button>
+                <button onclick="disconnectSSE()" disabled id="disconnectButton">Disconnect SSE</button>
                 <div id="sseStatus" class="status"></div>
                 <div id="sseLog" class="log"></div>
             </div>
@@ -63,10 +64,19 @@
             <h2>GraphQL Query</h2>
             <textarea id="graphqlQuery" rows="6" placeholder="Enter your GraphQL subscription query">
 subscription {
-  postUpdated {
+  postUpdated(id: "394") {
     id
     title
     status
+    content
+    date
+    modified
+    author {
+      node {
+        id
+        name
+      }
+    }
   }
 }</textarea>
             <input type="text" id="operationId" placeholder="Operation ID (for single connection mode)" value="test-subscription-001">
@@ -133,10 +143,26 @@ subscription {
                     setStatus('sseStatus', 'Connected');
                     document.getElementById('executeButton').disabled = false;
                     document.getElementById('stopButton').disabled = false;
+                    document.getElementById('disconnectButton').disabled = false;
                 };
                 
+                eventSource.addEventListener('test', function(event) {
+                    log('sseLog', 'Received test event: ' + event.data);
+                    setStatus('sseStatus', 'Test event received - connection working!');
+                });
+                
                 eventSource.addEventListener('next', function(event) {
-                    log('sseLog', 'Received next event: ' + event.data);
+                    const data = JSON.parse(event.data);
+                    const operationId = data.id;
+                    const payload = data.payload;
+                    
+                    log('sseLog', 'Received next event for operation: ' + operationId);
+                    log('sseLog', 'Event data: ' + JSON.stringify(payload, null, 2));
+                    
+                    // Check if this is a WordPress subscription event
+                    if (operationId.startsWith('wordpress_subscription_')) {
+                        setStatus('sseStatus', 'WordPress event received! Check log for details');
+                    }
                 });
                 
                 eventSource.addEventListener('complete', function(event) {
@@ -144,8 +170,15 @@ subscription {
                 });
                 
                 eventSource.onerror = function(event) {
-                    log('sseLog', 'SSE error occurred');
-                    setStatus('sseStatus', 'Connection error', true);
+                    log('sseLog', 'SSE error occurred - checking readyState: ' + eventSource.readyState);
+                    setStatus('sseStatus', 'Connection error (readyState: ' + eventSource.readyState + ')', true);
+                    
+                    // Close the connection to prevent automatic reconnections
+                    if (eventSource && eventSource.readyState !== EventSource.CLOSED) {
+                        log('sseLog', 'Closing EventSource to prevent reconnection');
+                        eventSource.close();
+                        eventSource = null;
+                    }
                 };
                 
             } catch (error) {
@@ -268,6 +301,18 @@ subscription {
             } catch (error) {
                 log('distinctLog', 'Network error: ' + error.message);
                 setStatus('distinctStatus', 'Network error', true);
+            }
+        }
+
+        function disconnectSSE() {
+            if (eventSource) {
+                log('sseLog', 'Manually disconnecting SSE connection');
+                eventSource.close();
+                eventSource = null;
+                setStatus('sseStatus', 'Disconnected');
+                document.getElementById('executeButton').disabled = true;
+                document.getElementById('stopButton').disabled = true;
+                document.getElementById('disconnectButton').disabled = true;
             }
         }
     </script>

@@ -58,6 +58,16 @@ class WPGraphQL_Event_Emitter {
             ) 
         );
         
+        // Debug: Log the complete event payload structure
+        error_log( 'WPGraphQL-SSE: Event payload structure: ' . json_encode([
+            'node_type' => $event_payload['node_type'],
+            'action' => $event_payload['action'], 
+            'node_id' => $event_payload['node_id'],
+            'context_keys' => array_keys( $event_payload['context'] ),
+            'has_post' => isset( $event_payload['context']['post'] ),
+            'post_id_from_context' => isset( $event_payload['context']['post'] ) ? $event_payload['context']['post']->ID : 'missing'
+        ]));
+        
         // Process the event for active subscriptions
         // self::process_event_for_subscriptions( $subscription_event_type, $event_payload );
         

@@ -9,7 +9,7 @@
  */
 add_action( 'post_updated', function( $post_id, $post_after, $post_before ) {
 
-    error_log( 'post_updated ' . $post_id );
+    error_log( 'WPGraphQL-SSE: post_updated hook fired for post ' . $post_id );
     
     // Skip auto-saves and revisions
     if ( wp_is_post_revision( $post_id ) || wp_is_post_autosave( $post_id ) ) {
@@ -52,6 +52,9 @@ add_action( 'post_updated', function( $post_id, $post_after, $post_before ) {
         );
     }
     
+    error_log( "WPGraphQL-SSE: About to emit event - Type: {$node_type}, Action: {$action}, ID: {$node_id}" );
+    error_log( "WPGraphQL-SSE: Post object details - ID: {$post_after->ID}, Title: {$post_after->post_title}" );
+    
     // Emit the standardized CREATE event
     WPGraphQL_Event_Emitter::emit(
         $node_type,                    // node_type
@@ -62,7 +65,7 @@ add_action( 'post_updated', function( $post_id, $post_after, $post_before ) {
             'post_type' => $post_after->post_type,
         ],
         [                          // metadata
-            'hook' => 'wp_insert_post',
+            'hook' => 'post_updated',
         ]
     );
     

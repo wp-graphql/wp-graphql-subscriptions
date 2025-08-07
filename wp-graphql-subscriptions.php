@@ -4,7 +4,7 @@
  * Description: (EXPERIMENTAL) Subscriptions for WPGraphQL
  * Author: WPGraphQL
  * Author URI: https://www.wpgraphql.com
- * Version: 0.1.0
+ * Version: 0.3.0
  * Text Domain: wp-graphql-subscriptions
  * Domain Path: /languages
  */
@@ -28,6 +28,18 @@ require_once __DIR__ . '/includes/class-wpgraphql-event-emitter.php';
 // Include the Event Queue class.
 require_once __DIR__ . '/includes/class-wpgraphql-event-queue.php';
 
+// Include the Subscription Storage interface.
+require_once __DIR__ . '/includes/interface-wpgraphql-subscription-storage.php';
+
+// Include the Database Storage implementation.
+require_once __DIR__ . '/includes/class-wpgraphql-subscription-database-storage.php';
+
+// Include the Subscription Connection class.
+require_once __DIR__ . '/includes/class-wpgraphql-subscription-connection.php';
+
+// Include the Connection Manager class.
+require_once __DIR__ . '/includes/class-wpgraphql-connection-manager.php';
+
 // Include the Event Stream class.
 require_once __DIR__ . '/includes/event-stream.php';
 
@@ -43,23 +55,116 @@ new WPGraphQL_Subscription_Manager();
  * Initialize plugin on plugins_loaded
  */
 add_action('plugins_loaded', function() {
-    // Ensure table exists on every page load (for development)
+    // Ensure tables exist on every page load (for development)
     // In production, you'd only do this on activation
+    
+    // Event queue table
     $event_queue = WPGraphQL_Event_Queue::get_instance();
-    
-    // Check if table exists
     global $wpdb;
-    $table_name = $wpdb->prefix . 'wpgraphql_subscription_events';
-    $table_exists = $wpdb->get_var("SHOW TABLES LIKE '{$table_name}'") === $table_name;
+    $events_table = $wpdb->prefix . 'wpgraphql_subscription_events';
+    $events_table_exists = $wpdb->get_var("SHOW TABLES LIKE '{$events_table}'") === $events_table;
     
-    if (!$table_exists) {
-        error_log('WPGraphQL Subscriptions: Table does not exist, creating...');
+    if (!$events_table_exists) {
+        error_log('WPGraphQL Subscriptions: Events table does not exist, creating...');
         $event_queue->create_table();
+    }
+    
+    // Subscription storage tables
+    $storage = new WPGraphQL_Subscription_Database_Storage();
+    $connections_table = $wpdb->prefix . 'wpgraphql_subscription_connections';
+    $subscriptions_table = $wpdb->prefix . 'wpgraphql_subscription_documents';
+    
+    $connections_exists = $wpdb->get_var("SHOW TABLES LIKE '{$connections_table}'") === $connections_table;
+    $subscriptions_exists = $wpdb->get_var("SHOW TABLES LIKE '{$subscriptions_table}'") === $subscriptions_table;
+    
+    if (!$connections_exists || !$subscriptions_exists) {
+        error_log('WPGraphQL Subscriptions: Subscription storage tables do not exist, creating...');
+        $storage->create_tables();
     }
 });
 
 /**
- * Plugin activation hook - create database table
+ * Schedule cleanup of expired connections
+ */
+add_action('init', function() {
+    if (!wp_next_scheduled('wpgraphql_subscription_cleanup')) {
+        wp_schedule_event(time(), 'hourly', 'wpgraphql_subscription_cleanup');
+    }
+});
+
+add_action('wpgraphql_subscription_cleanup', function() {
+    $connection_manager = WPGraphQL_Connection_Manager::get_instance();
+    $cleaned = $connection_manager->cleanup_stale_connections();
+    if ($cleaned > 0) {
+        error_log("WPGraphQL Subscriptions: Scheduled cleanup removed {$cleaned} expired connections");
+    }
+});
+
+/**
+ * Add GraphQL-SSE endpoint rewrite rules
+ */
+add_action('init', function() {
+    // Add rewrite rules for GraphQL-SSE endpoint - handle both with and without trailing slash
+    add_rewrite_rule(
+        '^graphql/stream$',
+        'index.php?graphql_sse_endpoint=1',
+        'top'
+    );
+    
+    add_rewrite_rule(
+        '^graphql/stream/$',
+        'index.php?graphql_sse_endpoint=1',
+        'top'
+    );
+    
+    // Add rewrite rules for WP JSON API style endpoint (alternative)
+    add_rewrite_rule(
+        '^wp-json/graphql/v1/stream$', 
+        'index.php?graphql_sse_endpoint=1',
+        'top'
+    );
+    
+    add_rewrite_rule(
+        '^wp-json/graphql/v1/stream/$', 
+        'index.php?graphql_sse_endpoint=1',
+        'top'
+    );
+});
+
+/**
+ * Add query vars for GraphQL-SSE endpoint
+ */
+add_filter('query_vars', function($vars) {
+    $vars[] = 'graphql_sse_endpoint';
+    return $vars;
+});
+
+/**
+ * Handle GraphQL-SSE endpoint requests
+ */
+add_action('parse_request', function($wp) {
+    if (array_key_exists('graphql_sse_endpoint', $wp->query_vars)) {
+        // This is a GraphQL-SSE endpoint request
+        // The actual handling is done in event-stream.php via template_redirect
+        return;
+    }
+});
+
+/**
+ * Prevent WordPress from redirecting GraphQL-SSE endpoints to add trailing slashes
+ */
+add_filter('redirect_canonical', function($redirect_url, $requested_url) {
+    // Check if this is a GraphQL-SSE endpoint request
+    if (strpos($requested_url, '/graphql/stream') !== false || 
+        strpos($requested_url, '/wp-json/graphql/v1/stream') !== false) {
+        // Don't redirect - handle as-is
+        return false;
+    }
+    return $redirect_url;
+}, 10, 2);
+
+/**
+ * Plugin activation hook - create database table and flush rewrite rules
  */
 function wpgraphql_subscriptions_activate() {
     error_log('WPGraphQL Subscriptions: Plugin activated, creating table...');
@@ -78,6 +183,10 @@ function wpgraphql_subscriptions_activate() {
         wp_schedule_event(time(), 'hourly', 'wpgraphql_cleanup_events');
         error_log('WPGraphQL Subscriptions: Scheduled cleanup cron job');
     }
+    
+    // Flush rewrite rules to ensure our endpoint is recognized
+    flush_rewrite_rules();
+    error_log('WPGraphQL Subscriptions: Flushed rewrite rules');
 }
 
 /**
@@ -86,8 +195,16 @@ function wpgraphql_subscriptions_activate() {
 function wpgraphql_subscriptions_deactivate() {
     // Clear scheduled cleanup
     wp_clear_scheduled_hook('wpgraphql_cleanup_events');
-    error_log('WPGraphQL Subscriptions: Plugin deactivated, cleared scheduled tasks');
+    
+    // Flush rewrite rules to clean up our endpoints
+    flush_rewrite_rules();
+    
+    error_log('WPGraphQL Subscriptions: Plugin deactivated, cleared scheduled tasks and rewrite rules');
 }
+
+// Register activation and deactivation hooks
+register_activation_hook(__FILE__, 'wpgraphql_subscriptions_activate');
+register_deactivation_hook(__FILE__, 'wpgraphql_subscriptions_deactivate');
 
 /**
  * Cleanup cron job - runs hourly to remove old events

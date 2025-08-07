@@ -31,6 +31,19 @@
    ```bash
    wp wpgraphql subscription stats
    ```
+   
+   This should show database tables are created and ready:
+   - `wp_wpgraphql_subscription_events` (Event queue)
+   - `wp_wpgraphql_subscription_connections` (Connection tokens)  
+   - `wp_wpgraphql_subscription_documents` (Subscription documents)
+
+5. **Test GraphQL-SSE Protocol**
+   
+   Open the test client at `/wp-content/plugins/wp-graphql-subscriptions/test-graphql-sse.html` in your browser and:
+   - Click "Make Reservation (PUT)" - should show success
+   - Click "Execute GraphQL Operation (POST)" - should show "Operation accepted"  
+   - Click "Establish SSE Connection (GET)" - should show connection and test event
+   - Update a WordPress post - should show real-time `postUpdated` data
 
 ### PHP-FPM Configuration for Development
 
@@ -55,9 +68,13 @@ wp-graphql-subscriptions/
 │   ├── class-wpgraphql-event-queue.php        # ✅ Database queue
 │   ├── class-wpgraphql-subscriptions-stream.php # ✅ SSE handler
 │   ├── class-wpgraphql-subscription-manager.php # Plugin coordinator
-│   ├── event-stream.php                       # ✅ SSE routing
+│   ├── interface-wpgraphql-subscription-storage.php # ✅ Storage interface
+│   ├── class-wpgraphql-subscription-database-storage.php # ✅ Database storage
+│   ├── class-wpgraphql-subscription-connection.php # ✅ Connection management
+│   ├── class-wpgraphql-connection-manager.php # ✅ Connection manager
+│   ├── class-wpgraphql-subscription-cli.php   # ✅ WP-CLI commands
+│   ├── event-stream.php                       # ✅ GraphQL-SSE routing
 │   ├── events.php                            # ✅ WordPress hooks
-│   ├── plugin-init.php                       # ✅ Initialization
 │   ├── schema.php                            # ✅ GraphQL schema
 │   └── transport-webhook.php                 # Webhook transport (optional)
 └── docs/                                     # Documentation
@@ -86,9 +103,15 @@ wp-graphql-subscriptions/
    - WordPress hook integration
    - Event validation and enrichment
 
-4. **WordPress Integration** (`events.php`, `event-stream.php`)
+4. **Subscription Storage System** (Storage classes)
+   - Cross-process subscription document persistence
+   - Swappable storage backends (Database, Redis, etc.)
+   - Connection lifecycle management with automatic expiry
+   - Database tables for connections and subscription documents
+
+5. **WordPress Integration** (`events.php`, `event-stream.php`)
    - Post update tracking
-   - URL routing for SSE endpoint
+   - GraphQL-SSE protocol routing
    - Admin interface hooks
 
 ### 🚧 In Progress / Next Priority
@@ -278,6 +301,278 @@ if ($wpdb->last_error) {
 - One-way communication only
 - Higher per-connection overhead than WebSockets
 - Limited by PHP-FPM process pool
+
+## Production Deployment & Scaling
+
+### Pre-Production Checklist
+
+#### Database Optimization
+```sql
+-- Add performance indexes (run once)
+CREATE INDEX idx_events_created_at ON wp_wpgraphql_subscription_events(created_at);
+CREATE INDEX idx_connections_expires ON wp_wpgraphql_subscription_connections(expires_at);
+CREATE INDEX idx_docs_token ON wp_wpgraphql_subscription_documents(connection_token);
+
+-- Monitor table sizes
+SELECT 
+    table_name,
+    ROUND(((data_length + index_length) / 1024 / 1024), 2) AS 'Size (MB)',
+    table_rows AS 'Rows'
+FROM information_schema.tables 
+WHERE table_name LIKE '%wpgraphql_subscription%';
+```
+
+#### Server Configuration
+```ini
+# PHP-FPM optimizations
+pm = dynamic
+pm.max_children = 50          # Increase for more concurrent SSE connections
+pm.start_servers = 10
+pm.min_spare_servers = 5
+pm.max_spare_servers = 15
+pm.max_requests = 200         # Restart workers to prevent memory leaks
+request_terminate_timeout = 300s  # Allow long-running SSE connections
+```
+
+```nginx
+# Nginx optimizations for SSE
+location ~ \.php$ {
+    fastcgi_buffering off;           # Critical for SSE
+    fastcgi_read_timeout 300s;       # Match PHP timeout
+    fastcgi_send_timeout 300s;
+    client_max_body_size 1M;
+    
+    # Proxy settings if using reverse proxy
+    proxy_buffering off;
+    proxy_cache off;
+    proxy_set_header Connection '';
+}
+```
+
+### Scaling Strategy by Traffic Level
+
+#### Stage 1: Small Production (< 10 concurrent connections)
+```php
+// wp-config.php optimizations
+define('WP_DEBUG', false);                    // Disable debug logging
+define('WP_CACHE', true);                     // Enable object caching
+define('AUTOMATIC_UPDATER_DISABLED', true);   // Prevent update interruptions
+
+// Optimize cleanup frequency
+add_action('init', function() {
+    wp_clear_scheduled_hook('wpgraphql_subscription_cleanup');
+    wp_schedule_event(time(), 'every_30_minutes', 'wpgraphql_subscription_cleanup');
+});
+```
+
+#### Stage 2: Medium Production (10-50 concurrent connections)
+```php
+// Enhanced cleanup and monitoring
+add_filter('wpgraphql_subscription_event_retention_hours', function() {
+    return 2; // Reduce retention from 24 hours to 2 hours
+});
+
+// Add performance monitoring
+add_action('wpgraphql_subscription_cleanup', function() {
+    // Log performance metrics
+    global $wpdb;
+    $event_count = $wpdb->get_var("SELECT COUNT(*) FROM {$wpdb->prefix}wpgraphql_subscription_events");
+    $connection_count = $wpdb->get_var("SELECT COUNT(*) FROM {$wpdb->prefix}wpgraphql_subscription_connections");
+    
+    error_log("WPGraphQL Subscriptions Stats: {$event_count} events, {$connection_count} connections");
+    
+    if ($event_count > 10000) {
+        error_log("WARNING: High event count detected. Consider Redis migration.");
+    }
+});
+```
+
+#### Stage 3: Large Production (50+ concurrent connections)
+```php
+// Migrate to Redis storage
+add_filter('wpgraphql_subscription_storage', function() {
+    if (defined('REDIS_HOST') && class_exists('Redis')) {
+        return new WPGraphQL_Subscription_Redis_Storage([
+            'host' => REDIS_HOST,
+            'port' => REDIS_PORT ?: 6379,
+            'password' => REDIS_PASSWORD ?? null,
+            'database' => REDIS_DB ?: 0,
+            'prefix' => 'wpgql_sub:',
+            'ttl' => 3600 // 1 hour default TTL
+        ]);
+    }
+    
+    // Fallback to optimized database storage
+    return new WPGraphQL_Subscription_Database_Storage();
+});
+
+// Monitor Redis performance
+add_action('wp_loaded', function() {
+    if (defined('WP_CLI') && WP_CLI) {
+        WP_CLI::add_command('wpgraphql subscription redis-stats', function() {
+            $storage = apply_filters('wpgraphql_subscription_storage', null);
+            if ($storage instanceof WPGraphQL_Subscription_Redis_Storage) {
+                $info = $storage->get_redis_info();
+                WP_CLI::line("Redis Memory Usage: " . $info['used_memory_human']);
+                WP_CLI::line("Connected Clients: " . $info['connected_clients']);
+                WP_CLI::line("Total Keys: " . $info['db0']['keys'] ?? 0);
+            }
+        });
+    }
+});
+```
+
+### Performance Monitoring
+
+#### Key Metrics to Track
+```php
+// Custom monitoring hooks
+add_action('wpgraphql_subscription_event_processed', function($event, $processing_time) {
+    if ($processing_time > 100) { // Log slow processing (>100ms)
+        error_log("Slow subscription processing: {$processing_time}ms for event {$event['event_type']}");
+    }
+}, 10, 2);
+
+add_action('wpgraphql_subscription_connection_created', function($token) {
+    // Track connection creation rate
+    wp_cache_incr('wpgql_connections_created_' . date('H'), 1, 'wpgql_stats');
+});
+```
+
+#### Database Performance Queries
+```sql
+-- Monitor slow queries
+SELECT * FROM mysql.slow_log 
+WHERE sql_text LIKE '%wpgraphql_subscription%' 
+ORDER BY start_time DESC LIMIT 10;
+
+-- Check table locks
+SHOW ENGINE INNODB STATUS\G
+
+-- Monitor connection usage
+SHOW PROCESSLIST;
+```
+
+### Troubleshooting Production Issues
+
+#### High Database Load
+```bash
+# Check for missing indexes
+wp db query "EXPLAIN SELECT * FROM wp_wpgraphql_subscription_events WHERE created_at > NOW() - INTERVAL 1 HOUR"
+
+# Monitor table growth
+wp db query "SELECT COUNT(*) as event_count, DATE(created_at) as date FROM wp_wpgraphql_subscription_events GROUP BY DATE(created_at) ORDER BY date DESC LIMIT 7"
+```
+
+#### Memory Issues
+```php
+// Monitor PHP memory usage in SSE streams
+add_action('wpgraphql_subscription_stream_loop', function() {
+    $memory = memory_get_usage(true);
+    $peak = memory_get_peak_usage(true);
+    
+    if ($memory > 50 * 1024 * 1024) { // 50MB warning
+        error_log("High memory usage in SSE stream: " . round($memory/1024/1024) . "MB");
+    }
+});
+```
+
+#### Connection Pool Exhaustion
+```ini
+# MySQL configuration adjustments
+max_connections = 200
+innodb_buffer_pool_size = 256M
+query_cache_size = 64M
+tmp_table_size = 64M
+max_heap_table_size = 64M
+```
+
+### Migration to Redis
+
+#### Step 1: Install Redis
+```bash
+# Ubuntu/Debian
+sudo apt-get install redis-server php-redis
+
+# CentOS/RHEL
+sudo yum install redis php-redis
+
+# Verify installation
+redis-cli ping
+# Should return: PONG
+```
+
+#### Step 2: Implement Redis Storage
+```php
+// Create Redis storage class (example)
+class WPGraphQL_Subscription_Redis_Storage implements WPGraphQL_Subscription_Storage_Interface {
+    private $redis;
+    private $prefix;
+    private $ttl;
+    
+    public function __construct($config = []) {
+        $this->redis = new Redis();
+        $this->redis->connect(
+            $config['host'] ?? '127.0.0.1',
+            $config['port'] ?? 6379
+        );
+        
+        if (!empty($config['password'])) {
+            $this->redis->auth($config['password']);
+        }
+        
+        if (isset($config['database'])) {
+            $this->redis->select($config['database']);
+        }
+        
+        $this->prefix = $config['prefix'] ?? 'wpgql:';
+        $this->ttl = $config['ttl'] ?? 3600;
+    }
+    
+    public function store_connection($token, $expires_at = null) {
+        $key = $this->prefix . 'conn:' . $token;
+        $ttl = $expires_at ? strtotime($expires_at) - time() : $this->ttl;
+        
+        return $this->redis->setex($key, $ttl, json_encode([
+            'created_at' => time(),
+            'expires_at' => $expires_at
+        ]));
+    }
+    
+    // Implement other interface methods...
+}
+```
+
+#### Step 3: Gradual Migration
+```php
+// Hybrid approach during migration
+class WPGraphQL_Subscription_Hybrid_Storage implements WPGraphQL_Subscription_Storage_Interface {
+    private $redis_storage;
+    private $db_storage;
+    private $use_redis;
+    
+    public function __construct() {
+        $this->db_storage = new WPGraphQL_Subscription_Database_Storage();
+        
+        try {
+            $this->redis_storage = new WPGraphQL_Subscription_Redis_Storage();
+            $this->use_redis = true;
+        } catch (Exception $e) {
+            error_log("Redis unavailable, falling back to database: " . $e->getMessage());
+            $this->use_redis = false;
+        }
+    }
+    
+    public function store_connection($token, $expires_at = null) {
+        if ($this->use_redis) {
+            return $this->redis_storage->store_connection($token, $expires_at);
+        }
+        return $this->db_storage->store_connection($token, $expires_at);
+    }
+    
+    // Implement other methods with Redis-first, DB-fallback pattern...
+}
+```
 
 ## Next Development Priorities
 

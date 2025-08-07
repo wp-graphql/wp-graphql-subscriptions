@@ -10,7 +10,7 @@ if (!class_exists('WP_CLI')) {
 class WPGraphQL_Subscription_CLI extends WP_CLI_Command {
     
     /**
-     * Show subscription queue statistics
+     * Show subscription system statistics
      * 
      * ## EXAMPLES
      * 
@@ -18,37 +18,77 @@ class WPGraphQL_Subscription_CLI extends WP_CLI_Command {
      */
     public function stats($args, $assoc_args) {
         $event_queue = WPGraphQL_Event_Queue::get_instance();
-        $stats = $event_queue->get_queue_stats();
+        $connection_manager = WPGraphQL_Connection_Manager::get_instance();
+        $queue_stats = $event_queue->get_queue_stats();
         
-        WP_CLI::line('WPGraphQL Subscription Queue Statistics:');
-        WP_CLI::line('=====================================');
-        WP_CLI::line('Total Events: ' . $stats['total_events']);
-        WP_CLI::line('Unprocessed Events: ' . $stats['unprocessed_events']);
-        WP_CLI::line('Processed Events: ' . $stats['processed_events']);
-        WP_CLI::line('Oldest Event: ' . ($stats['oldest_event'] ?: 'None'));
-        WP_CLI::line('Newest Event: ' . ($stats['newest_event'] ?: 'None'));
+        WP_CLI::line('WPGraphQL Subscription System Statistics:');
+        WP_CLI::line('=========================================');
+        WP_CLI::line('');
+        
+        // Connection Manager Stats
+        WP_CLI::line('📡 Connection Manager:');
+        WP_CLI::line('  Active Connections: ' . $connection_manager->get_connection_count());
+        WP_CLI::line('  Total Subscriptions: ' . $connection_manager->get_total_subscription_count());
+        WP_CLI::line('');
+        
+        // Event Queue Stats
+        WP_CLI::line('📋 Event Queue:');
+        WP_CLI::line('  Total Events: ' . $queue_stats['total_events']);
+        WP_CLI::line('  Unprocessed Events: ' . $queue_stats['unprocessed_events']);
+        WP_CLI::line('  Processed Events: ' . $queue_stats['processed_events']);
+        WP_CLI::line('  Oldest Event: ' . ($queue_stats['oldest_event'] ?: 'None'));
+        WP_CLI::line('  Newest Event: ' . ($queue_stats['newest_event'] ?: 'None'));
+        
+        // Active Connection Details
+        $connections = $connection_manager->get_active_connections();
+        if (!empty($connections)) {
+            WP_CLI::line('');
+            WP_CLI::line('🔗 Active Connections:');
+            foreach ($connections as $connection_data) {
+                $token = $connection_data['token'];
+                $connection = $connection_manager->get_connection($token);
+                $subscription_count = $connection ? $connection->get_subscription_count() : 0;
+                $created_at = strtotime($connection_data['created_at']);
+                $age = time() - $created_at;
+                $expires = $connection_data['expires_at'] ? date('Y-m-d H:i:s', strtotime($connection_data['expires_at'])) : 'Never';
+                WP_CLI::line("  {$token}: {$subscription_count} subscriptions, {$age}s old, expires: {$expires}");
+            }
+        }
     }
     
     /**
-     * Clean up old processed events
+     * Clean up old processed events and expired connections
      * 
      * ## OPTIONS
      * 
      * [--hours=<hours>]
      * : Number of hours old events must be to get cleaned up. Default: 24
      * 
+     * [--connections]
+     * : Also cleanup expired connections and subscriptions
+     * 
      * ## EXAMPLES
      * 
      *     wp wpgraphql subscription cleanup
-     *     wp wpgraphql subscription cleanup --hours=6
+     *     wp wpgraphql subscription cleanup --hours=6 --connections
      */
     public function cleanup($args, $assoc_args) {
         $hours = isset($assoc_args['hours']) ? (int) $assoc_args['hours'] : 24;
+        $cleanup_connections = isset($assoc_args['connections']);
         
+        // Cleanup old events
         $event_queue = WPGraphQL_Event_Queue::get_instance();
-        $cleaned = $event_queue->cleanup_old_events($hours);
+        $cleaned_events = $event_queue->cleanup_old_events($hours);
+        WP_CLI::line("Cleaned up {$cleaned_events} events older than {$hours} hours.");
         
-        WP_CLI::success("Cleaned up {$cleaned} events older than {$hours} hours.");
+        // Cleanup expired connections if requested
+        if ($cleanup_connections) {
+            $connection_manager = WPGraphQL_Connection_Manager::get_instance();
+            $cleaned_connections = $connection_manager->cleanup_stale_connections();
+            WP_CLI::line("Cleaned up {$cleaned_connections} expired connections.");
+        }
+        
+        WP_CLI::success("Cleanup completed.");
     }
     
     /**
