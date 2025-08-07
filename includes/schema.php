@@ -1,0 +1,49 @@
+<?php
+/**
+ * Register Root Subscription type and fields.
+ */
+add_action( 'graphql_register_types', function() {
+    register_graphql_object_type(
+        'RootSubscription',
+        [
+            'description' => __( 'Root subscription type. Entry point for all subscriptions.', 'wpgraphql-subscriptions' ),
+            'fields'      => [], // Fields are added via register_graphql_field().
+        ]
+    );
+
+    register_graphql_field( 'RootSubscription', 'postUpdated', [
+        'description' => __( 'Subscription for post updates.', 'wpgraphql-subscriptions' ),
+        'type'        => 'Post',
+        'args'        => [
+            'id' => [
+                'type'        => 'ID',
+                'description' => __( 'The ID of the post to subscribe to.', 'wpgraphql-subscriptions' ),
+            ],
+        ],
+        'resolve'     => function( $root, $args, $context, $info ) {
+            $post = get_post( $args['id'] );
+            if ( ! $post ) {
+                return null;
+            }
+            return new \WPGraphQL\Model\Post( $post );
+        },
+        'subscribe'   => function( $payload, $variables, $context, $info ) {
+            error_log( 'postUpdated subscription' );
+            error_log( json_encode( $payload ) );
+            error_log( json_encode( $variables ) );
+            error_log( json_encode( $context ) );
+            error_log( json_encode( $info ) );
+        },
+    ]);
+});
+
+/**
+ * Add the Subscription type to the schema.
+ */
+add_filter( 'graphql_schema_config', function( $config, $type_registry ) {
+    $subscription_root = $type_registry->get_type( 'RootSubscription' );
+    if ( $subscription_root ) {
+        $config->setSubscription( $subscription_root );
+    }
+    return $config;
+}, 10, 2 );
