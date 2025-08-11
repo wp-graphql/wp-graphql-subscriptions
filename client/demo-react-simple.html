@@ -1,0 +1,613 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>WPGraphQL Subscriptions - React Demo (No Apollo)</title>
+    <script src="https://unpkg.com/react@18/umd/react.development.js"></script>
+    <script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 20px;
+            background: #f5f5f5;
+        }
+        .container {
+            background: white;
+            border-radius: 8px;
+            padding: 24px;
+            margin-bottom: 24px;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+        }
+        .controls {
+            display: flex;
+            gap: 12px;
+            align-items: center;
+            margin-bottom: 20px;
+        }
+        button {
+            padding: 10px 20px;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            font-weight: bold;
+        }
+        button:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+        }
+        .connect { background: #007cba; color: white; }
+        .disconnect { background: #dc3545; color: white; }
+        .subscribe { background: #28a745; color: white; }
+        .status {
+            padding: 12px;
+            border-radius: 4px;
+            margin-bottom: 16px;
+            font-weight: bold;
+        }
+        .connected { background: #d4edda; color: #155724; }
+        .disconnected { background: #f8d7da; color: #721c24; }
+        .connecting { background: #d1ecf1; color: #0c5460; }
+        .post-update {
+            border: 2px solid #28a745;
+            border-radius: 8px;
+            padding: 16px;
+            margin-bottom: 16px;
+            background: #f8fff9;
+            animation: fadeIn 0.5s ease-in;
+        }
+        .post-update.updated {
+            animation: pulse 1s ease-in-out;
+        }
+        @keyframes fadeIn {
+            from { opacity: 0; transform: translateY(-10px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+        @keyframes pulse {
+            0% { border-color: #28a745; }
+            50% { border-color: #20c997; }
+            100% { border-color: #28a745; }
+        }
+        .logs {
+            height: 200px;
+            overflow-y: auto;
+            background: #f8f9fa;
+            border: 1px solid #dee2e6;
+            border-radius: 4px;
+            padding: 12px;
+            font-family: monospace;
+            font-size: 12px;
+        }
+        .log-entry {
+            margin-bottom: 4px;
+            padding: 2px 0;
+        }
+        .log-info { color: #0c5460; }
+        .log-success { color: #155724; }
+        .log-error { color: #721c24; }
+        .log-debug { color: #6c757d; }
+    </style>
+</head>
+<body>
+    <div id="root"></div>
+
+    <script type="text/babel">
+        const { useState, useEffect, useRef } = React;
+
+        // GraphQL-SSE Client (embedded for browser compatibility)
+        class GraphQLSSEClient {
+            constructor(config = {}) {
+                this.baseUrl = config.baseUrl || '/graphql/stream';
+                this.debug = config.debug || false;
+                this.reconnectAttempts = config.reconnectAttempts || 5;
+                this.reconnectDelay = config.reconnectDelay || 1000;
+                this.headers = config.headers || {};
+                
+                // Internal state
+                this.connectionToken = null;
+                this.eventSource = null;
+                this.subscriptions = new Map();
+                this.connectionState = 'disconnected';
+                this.reconnectCount = 0;
+                
+                // Event handlers
+                this.onConnectionChange = config.onConnectionChange || (() => {});
+                this.onError = config.onError || console.error;
+                this.onDebug = config.onDebug || (this.debug ? console.log : () => {});
+            }
+
+            async makeReservation() {
+                try {
+                    this.onDebug('Making GraphQL-SSE reservation...');
+                    
+                    const response = await fetch(this.baseUrl, {
+                        method: 'PUT',
+                        headers: this.headers
+                    });
+
+                    if (!response.ok) {
+                        throw new Error(`Reservation failed: ${response.status} ${response.statusText}`);
+                    }
+
+                    this.connectionToken = await response.text();
+                    this.onDebug('Reservation successful:', this.connectionToken);
+                    
+                    return this.connectionToken;
+                } catch (error) {
+                    this.onError('Reservation error:', error);
+                    throw error;
+                }
+            }
+
+            async executeOperation(operationId, query, variables = {}) {
+                if (!this.connectionToken) {
+                    throw new Error('Must make reservation before executing operations');
+                }
+
+                try {
+                    this.onDebug('Executing GraphQL operation:', operationId);
+                    
+                    const response = await fetch(this.baseUrl, {
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/json',
+                            'X-GraphQL-Event-Stream-Token': this.connectionToken,
+                            ...this.headers
+                        },
+                        body: JSON.stringify({
+                            query,
+                            variables,
+                            extensions: {
+                                operationId
+                            }
+                        })
+                    });
+
+                    if (!response.ok) {
+                        throw new Error(`Operation failed: ${response.status} ${response.statusText}`);
+                    }
+
+                    const result = await response.json();
+                    this.onDebug('Operation accepted:', result);
+                    
+                    return result;
+                } catch (error) {
+                    this.onError('Operation error:', error);
+                    throw error;
+                }
+            }
+
+            async connect() {
+                if (!this.connectionToken) {
+                    throw new Error('Must make reservation before connecting');
+                }
+
+                if (this.eventSource) {
+                    this.disconnect();
+                }
+
+                try {
+                    this.connectionState = 'connecting';
+                    this.onConnectionChange(this.connectionState);
+                    
+                    const sseUrl = `${this.baseUrl}?token=${encodeURIComponent(this.connectionToken)}`;
+                    console.log('🚀 Creating EventSource with URL:', sseUrl);
+                    this.onDebug('Establishing SSE connection:', sseUrl);
+                    
+                    this.eventSource = new EventSource(sseUrl);
+                    console.log('🚀 EventSource created:', this.eventSource);
+                    console.log('🚀 EventSource readyState:', this.eventSource.readyState);
+                    
+                    this.eventSource.onopen = (event) => {
+                        console.log('🚀 EventSource onopen called:', event);
+                        this.connectionState = 'connected';
+                        this.reconnectCount = 0;
+                        this.onConnectionChange(this.connectionState);
+                        this.onDebug('SSE connection established');
+                    };
+
+                    this.eventSource.onmessage = (event) => {
+                        console.log('🚀 EventSource onmessage called:', event);
+                        this.handleSSEMessage(event);
+                    };
+
+                    // Listen for specific event types that might be used
+                    this.eventSource.addEventListener('test', (event) => {
+                        console.log('🚀 EventSource test event:', event);
+                        this.handleSSEMessage(event);
+                    });
+
+                    this.eventSource.addEventListener('next', (event) => {
+                        console.log('🚀 EventSource next event:', event);
+                        this.handleSSEMessage(event);
+                    });
+
+                    this.eventSource.addEventListener('complete', (event) => {
+                        console.log('🚀 EventSource complete event:', event);
+                        this.handleSSEMessage(event);
+                    });
+
+                    // Listen for ALL events to see what's actually being sent
+                    const originalAddEventListener = this.eventSource.addEventListener;
+                    this.eventSource.addEventListener = function(type, listener, options) {
+                        console.log('🚀 EventSource addEventListener called for:', type);
+                        return originalAddEventListener.call(this, type, listener, options);
+                    };
+
+                    this.eventSource.onerror = (error) => {
+                        console.log('🚀 EventSource onerror called:', error);
+                        console.log('🚀 EventSource readyState after error:', this.eventSource.readyState);
+                        this.onError('SSE connection error:', error);
+                        this.connectionState = 'error';
+                        this.onConnectionChange(this.connectionState);
+                    };
+
+                } catch (error) {
+                    this.connectionState = 'error';
+                    this.onConnectionChange(this.connectionState);
+                    this.onError('Connection error:', error);
+                    throw error;
+                }
+            }
+
+            handleSSEMessage(event) {
+                console.log('🔥 handleSSEMessage called with event:', event);
+                console.log('🔥 Event data:', event.data);
+                console.log('🔥 Event type:', event.type);
+                
+                try {
+                    const data = JSON.parse(event.data);
+                    console.log('🔥 Parsed SSE data:', data);
+                    this.onDebug('Received SSE message:', data);
+
+                    // Handle different message types
+                    if (data.type === 'test') {
+                        console.log('🔥 Handling test message');
+                        this.onDebug('Connection test successful:', data);
+                    } else if (data.id && data.payload) {
+                        console.log('🔥 Handling next event with ID:', data.id);
+                        this.onDebug('Processing next event:', data);
+                        this.handleNextEvent(data);
+                    } else {
+                        console.log('🔥 Unhandled message type:', data);
+                        this.onDebug('Unhandled message type:', data);
+                    }
+                } catch (error) {
+                    console.error('🔥 Error parsing SSE message:', error);
+                    console.error('🔥 Raw event data:', event.data);
+                    this.onError('Error parsing SSE message:', error, event.data);
+                }
+            }
+
+            handleNextEvent(data) {
+                const operationId = data.id;
+                const subscription = this.subscriptions.get(operationId);
+                
+                console.log('🔍 handleNextEvent called with:', data);
+                console.log('🔍 Looking for operation ID:', operationId);
+                console.log('🔍 Subscription found:', !!subscription);
+                console.log('🔍 Available subscriptions:', Array.from(this.subscriptions.keys()));
+                console.log('🔍 Subscriptions Map size:', this.subscriptions.size);
+                console.log('🔍 Full subscriptions Map:', this.subscriptions);
+                
+                this.onDebug(`Looking for subscription ${operationId}, found:`, !!subscription);
+                this.onDebug('Available subscriptions:', Array.from(this.subscriptions.keys()));
+                this.onDebug('Payload to send:', data.payload);
+                
+                if (subscription && subscription.observer) {
+                    console.log('✅ Calling subscription observer.next()');
+                    subscription.observer.next(data.payload);
+                } else {
+                    console.log('❌ No subscription found or no observer');
+                    this.onDebug('No subscription found for operation:', operationId);
+                }
+            }
+
+            async subscribe(operationId, query, variables = {}) {
+                await this.executeOperation(operationId, query, variables);
+
+                return {
+                    subscribe: (observer) => {
+                        this.subscriptions.set(operationId, {
+                            query,
+                            variables,
+                            observer,
+                            createdAt: Date.now()
+                        });
+
+                        this.onDebug('Subscription registered:', operationId);
+
+                        return {
+                            unsubscribe: () => {
+                                this.subscriptions.delete(operationId);
+                                this.onDebug('Subscription removed:', operationId);
+                            }
+                        };
+                    }
+                };
+            }
+
+            disconnect() {
+                console.log('🧹 Disconnecting, current EventSource:', this.eventSource);
+                if (this.eventSource) {
+                    console.log('🧹 Closing EventSource, readyState before:', this.eventSource.readyState);
+                    this.eventSource.close();
+                    console.log('🧹 EventSource readyState after close:', this.eventSource.readyState);
+                    this.eventSource = null;
+                }
+                
+                this.connectionState = 'disconnected';
+                this.onConnectionChange(this.connectionState);
+                this.connectionToken = null;
+                this.reconnectCount = 0;
+                
+                for (const [operationId, subscription] of this.subscriptions) {
+                    if (subscription.observer) {
+                        subscription.observer.complete();
+                    }
+                }
+                this.subscriptions.clear();
+                
+                console.log('🧹 Disconnect complete');
+                this.onDebug('Disconnected and cleaned up');
+            }
+
+            getConnectionState() {
+                return {
+                    state: this.connectionState,
+                    token: this.connectionToken,
+                    activeSubscriptions: this.subscriptions.size,
+                    reconnectCount: this.reconnectCount
+                };
+            }
+        }
+
+        // GraphQL subscription query
+        const POST_UPDATED_SUBSCRIPTION = `
+            subscription PostUpdated($id: ID!) {
+                postUpdated(id: $id) {
+                    id
+                    title
+                    status
+                    content
+                    date
+                    modified
+                    author {
+                        node {
+                            id
+                            name
+                        }
+                    }
+                }
+            }
+        `;
+
+        // Main React App
+        function App() {
+            const [client, setClient] = useState(null);
+            const [connectionState, setConnectionState] = useState('disconnected');
+            const [postId, setPostId] = useState('394');
+            const [posts, setPosts] = useState([]);
+            const [logs, setLogs] = useState([]);
+            const [subscription, setSubscription] = useState(null);
+            const logsRef = useRef();
+
+            const addLog = (message, type = 'info') => {
+                const timestamp = new Date().toLocaleTimeString();
+                setLogs(prev => [...prev, { message, type, timestamp }]);
+                setTimeout(() => {
+                    logsRef.current?.scrollTo(0, logsRef.current.scrollHeight);
+                }, 100);
+            };
+
+            // Initialize client
+            useEffect(() => {
+                const sseClient = new GraphQLSSEClient({
+                    baseUrl: '/graphql/stream',
+                    debug: true,
+                    onConnectionChange: (state) => {
+                        setConnectionState(state);
+                        addLog(`Connection state: ${state}`, 'info');
+                    },
+                    onError: (message, ...args) => {
+                        addLog(`Error: ${message}`, 'error');
+                        console.error('SSE Error:', message, ...args);
+                    },
+                    onDebug: (message, ...args) => {
+                        addLog(`Debug: ${message}`, 'debug');
+                        console.log('SSE Debug:', message, ...args);
+                    }
+                });
+
+                setClient(sseClient);
+            }, []);
+
+            const connect = async () => {
+                if (!client) return;
+                
+                try {
+                    addLog('Connecting to GraphQL-SSE...', 'info');
+                    await client.makeReservation();
+                    await client.connect();
+                    addLog('Connected successfully!', 'success');
+                } catch (error) {
+                    addLog(`Connection failed: ${error.message}`, 'error');
+                }
+            };
+
+            const disconnect = () => {
+                if (!client) return;
+                
+                if (subscription) {
+                    subscription.unsubscribe();
+                    setSubscription(null);
+                }
+                
+                client.disconnect();
+                addLog('Disconnected', 'info');
+                setPosts([]);
+            };
+
+            const subscribeToPost = async () => {
+                if (!client || connectionState !== 'connected' || !postId) return;
+
+                try {
+                    const operationId = `post-${postId}-${Date.now()}`;
+                    console.log('🔧 Creating subscription with operation ID:', operationId);
+                    addLog(`Creating subscription with ID: ${operationId}`, 'debug');
+                    const sub = await client.subscribe(operationId, POST_UPDATED_SUBSCRIPTION, { id: postId });
+                    
+                    const unsubscribe = sub.subscribe({
+                        next: (data) => {
+                            console.log('🎉 React received subscription data:', data);
+                            addLog(`🎉 Received update for post ${postId}`, 'success');
+                            addLog(`Data structure: ${JSON.stringify(data, null, 2)}`, 'debug');
+                            handlePostUpdate(data);
+                        },
+                        error: (error) => {
+                            console.error('❌ React subscription error:', error);
+                            addLog(`Subscription error: ${error.message}`, 'error');
+                        },
+                        complete: () => {
+                            console.log('✅ React subscription completed');
+                            addLog(`Subscription ${operationId} completed`, 'info');
+                        }
+                    });
+
+                    setSubscription(unsubscribe);
+                    addLog(`Subscribed to post updates for ID: ${postId}`, 'success');
+                } catch (error) {
+                    addLog(`Subscription failed: ${error.message}`, 'error');
+                }
+            };
+
+            const handlePostUpdate = (data) => {
+                console.log('handlePostUpdate received:', data);
+                
+                // Check if this is a subscription confirmation message
+                if (data.data?.subscription) {
+                    console.log('Received subscription confirmation:', data.data.subscription);
+                    addLog(`Subscription confirmed: ${data.data.subscription.status}`, 'info');
+                    return;
+                }
+                
+                // Check for actual post update data
+                const postData = data.data?.postUpdated;
+                
+                if (!postData) {
+                    console.log('No postData found, data structure:', data);
+                    addLog('Received data but no postUpdated field found', 'debug');
+                    return;
+                }
+                
+                console.log('✅ Processing post update:', postData);
+
+                setPosts(prev => {
+                    const existing = prev.find(p => p.id === postData.id);
+                    if (existing) {
+                        return prev.map(p => p.id === postData.id ? { ...postData, isUpdated: true } : p);
+                    } else {
+                        return [...prev, { ...postData, isUpdated: true }];
+                    }
+                });
+
+                // Remove update indicator after animation
+                setTimeout(() => {
+                    setPosts(prev => prev.map(p => ({ ...p, isUpdated: false })));
+                }, 1000);
+            };
+
+            const getStatusClass = () => {
+                switch (connectionState) {
+                    case 'connected': return 'connected';
+                    case 'connecting': return 'connecting';
+                    default: return 'disconnected';
+                }
+            };
+
+            return (
+                <div>
+                    <h1>🚀 WPGraphQL Subscriptions - React Demo (Direct)</h1>
+                    
+                    <div className="container">
+                        <div className={`status ${getStatusClass()}`}>
+                            Status: {connectionState.toUpperCase()}
+                            {client && ` | Token: ${client.connectionToken ? client.connectionToken.substring(0, 8) + '...' : 'None'}`}
+                        </div>
+                        
+                        <div className="controls">
+                            <button 
+                                className="connect" 
+                                onClick={connect} 
+                                disabled={connectionState === 'connected' || connectionState === 'connecting'}
+                            >
+                                Connect
+                            </button>
+                            <button 
+                                className="disconnect" 
+                                onClick={disconnect} 
+                                disabled={connectionState === 'disconnected'}
+                            >
+                                Disconnect
+                            </button>
+                            <input 
+                                type="text" 
+                                value={postId} 
+                                onChange={(e) => setPostId(e.target.value)}
+                                placeholder="Post ID"
+                                style={{padding: '10px', borderRadius: '4px', border: '1px solid #ccc'}}
+                            />
+                            <button 
+                                className="subscribe" 
+                                onClick={subscribeToPost} 
+                                disabled={connectionState !== 'connected' || !postId}
+                            >
+                                Subscribe to Post
+                            </button>
+                        </div>
+                    </div>
+
+                    {connectionState === 'connected' && (
+                        <div className="container">
+                            <h3>Real-time Post Updates</h3>
+                            {posts.length === 0 ? (
+                                <p>No post updates received yet. Subscribe to a post and update it in WordPress admin.</p>
+                            ) : (
+                                posts.map(post => (
+                                    <div key={post.id} className={`post-update ${post.isUpdated ? 'updated' : ''}`}>
+                                        <h4>📝 {post.title}</h4>
+                                        <p><strong>ID:</strong> {post.id} | <strong>Status:</strong> {post.status}</p>
+                                        <p><strong>Author:</strong> {post.author?.node?.name || 'Unknown'}</p>
+                                        <p><strong>Modified:</strong> {new Date(post.modified).toLocaleString()}</p>
+                                        <div style={{marginTop: '8px', fontSize: '12px', color: '#6c757d'}}>
+                                            Received at: {new Date().toLocaleTimeString()}
+                                        </div>
+                                    </div>
+                                ))
+                            )}
+                        </div>
+                    )}
+
+                    <div className="container">
+                        <h3>Debug Logs</h3>
+                        <div className="logs" ref={logsRef}>
+                            {logs.map((log, index) => (
+                                <div key={index} className={`log-entry log-${log.type}`}>
+                                    [{log.timestamp}] {log.message}
+                                </div>
+                            ))}
+                        </div>
+                    </div>
+                </div>
+            );
+        }
+
+        // Render the app
+        ReactDOM.render(<App />, document.getElementById('root'));
+    </script>
+</body>
+</html>

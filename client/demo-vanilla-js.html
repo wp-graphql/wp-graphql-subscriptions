@@ -1,0 +1,781 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>WPGraphQL Subscriptions - Vanilla JS Demo</title>
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 20px;
+            background: #f5f5f5;
+        }
+        .container {
+            background: white;
+            border-radius: 8px;
+            padding: 24px;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+            margin-bottom: 20px;
+        }
+        .status {
+            padding: 12px;
+            border-radius: 6px;
+            margin-bottom: 16px;
+            font-weight: 500;
+        }
+        .status.connected { background: #d4edda; color: #155724; }
+        .status.connecting { background: #fff3cd; color: #856404; }
+        .status.disconnected { background: #f8d7da; color: #721c24; }
+        .status.error { background: #f8d7da; color: #721c24; }
+        
+        .subscription-card {
+            border: 1px solid #e9ecef;
+            border-radius: 6px;
+            padding: 16px;
+            margin-bottom: 12px;
+        }
+        
+        .post-update {
+            border: 1px solid #28a745;
+            border-radius: 6px;
+            padding: 16px;
+            margin-bottom: 12px;
+            background: #f8fff9;
+            animation: slideIn 0.5s ease-out;
+        }
+        
+        @keyframes slideIn {
+            from { opacity: 0; transform: translateY(-10px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+        
+        .controls {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 12px;
+            margin-bottom: 20px;
+        }
+        
+        button {
+            background: #007cba;
+            color: white;
+            border: none;
+            padding: 12px 16px;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 14px;
+        }
+        button:hover { background: #005a87; }
+        button:disabled { background: #ccc; cursor: not-allowed; }
+        button.danger { background: #dc3545; }
+        button.danger:hover { background: #c82333; }
+        button.success { background: #28a745; }
+        button.success:hover { background: #218838; }
+        
+        input, select {
+            padding: 10px;
+            border: 1px solid #ccc;
+            border-radius: 4px;
+            font-size: 14px;
+        }
+        
+        .logs {
+            background: #f8f9fa;
+            border: 1px solid #e9ecef;
+            border-radius: 4px;
+            padding: 12px;
+            font-family: 'Monaco', 'Menlo', monospace;
+            font-size: 12px;
+            max-height: 300px;
+            overflow-y: auto;
+        }
+        
+        .log-entry {
+            margin-bottom: 4px;
+            padding: 2px 0;
+        }
+        .log-entry.error { color: #dc3545; }
+        .log-entry.success { color: #28a745; }
+        .log-entry.info { color: #17a2b8; }
+        .log-entry.debug { color: #6c757d; }
+        
+        .stats {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+            gap: 12px;
+            margin-bottom: 16px;
+        }
+        .stat {
+            text-align: center;
+            padding: 12px;
+            background: #f8f9fa;
+            border-radius: 4px;
+        }
+        .stat-value {
+            font-size: 24px;
+            font-weight: bold;
+            color: #007cba;
+        }
+        .stat-label {
+            font-size: 12px;
+            color: #6c757d;
+            text-transform: uppercase;
+        }
+        
+        h1, h2 { color: #333; }
+        h1 { border-bottom: 2px solid #007cba; padding-bottom: 8px; }
+        
+        .json-viewer {
+            background: #f8f9fa;
+            border: 1px solid #e9ecef;
+            border-radius: 4px;
+            padding: 12px;
+            font-family: 'Monaco', 'Menlo', monospace;
+            font-size: 12px;
+            white-space: pre-wrap;
+            max-height: 200px;
+            overflow-y: auto;
+        }
+    </style>
+</head>
+<body>
+    <h1>🚀 WPGraphQL Subscriptions - Vanilla JS Demo</h1>
+    
+    <div class="container">
+        <div id="connection-status" class="status disconnected">
+            Connection Status: DISCONNECTED
+        </div>
+        
+        <div class="stats">
+            <div class="stat">
+                <div class="stat-value" id="active-subscriptions">0</div>
+                <div class="stat-label">Active Subscriptions</div>
+            </div>
+            <div class="stat">
+                <div class="stat-value" id="messages-received">0</div>
+                <div class="stat-label">Messages Received</div>
+            </div>
+            <div class="stat">
+                <div class="stat-value" id="reconnect-count">0</div>
+                <div class="stat-label">Reconnect Count</div>
+            </div>
+        </div>
+        
+        <div class="controls">
+            <button id="connect-btn">Connect</button>
+            <button id="disconnect-btn" disabled>Disconnect</button>
+            <input type="text" id="post-id" placeholder="Post ID (e.g., 394)" value="394">
+            <button id="subscribe-btn" disabled>Subscribe to Post Updates</button>
+            <button id="subscribe-all-btn" disabled>Subscribe to All Posts</button>
+            <button id="clear-logs-btn" class="danger">Clear Logs</button>
+        </div>
+    </div>
+
+    <div class="container">
+        <h2>Active Subscriptions</h2>
+        <div id="subscriptions-list">
+            <p>No active subscriptions</p>
+        </div>
+    </div>
+
+    <div class="container">
+        <h2>Real-time Post Updates</h2>
+        <div id="post-updates">
+            <p>No post updates received yet. Connect and subscribe, then update a post in WordPress admin.</p>
+        </div>
+    </div>
+
+    <div class="container">
+        <h2>Debug Logs</h2>
+        <div class="logs" id="logs"></div>
+    </div>
+
+    <div class="container">
+        <h2>Instructions</h2>
+        <ol>
+            <li>Click <strong>Connect</strong> to establish GraphQL-SSE connection</li>
+            <li>Enter a Post ID and click <strong>Subscribe to Post Updates</strong></li>
+            <li>Or click <strong>Subscribe to All Posts</strong> for general updates</li>
+            <li>Go to WordPress admin and update a post</li>
+            <li>Watch real-time updates appear above! 🎉</li>
+        </ol>
+        
+        <h3>Features Demonstrated:</h3>
+        <ul>
+            <li>✅ Pure JavaScript GraphQL-SSE client</li>
+            <li>✅ Multiple concurrent subscriptions</li>
+            <li>✅ Real-time connection status</li>
+            <li>✅ Automatic reconnection with exponential backoff</li>
+            <li>✅ GraphQL-SSE protocol compliance</li>
+            <li>✅ Subscription lifecycle management</li>
+            <li>✅ Detailed logging and debugging</li>
+        </ul>
+    </div>
+
+    <script>
+        // GraphQL-SSE Client (embedded for browser compatibility)
+        class GraphQLSSEClient {
+            constructor(config = {}) {
+                this.baseUrl = config.baseUrl || '/graphql/stream';
+                this.debug = config.debug || false;
+                this.reconnectAttempts = config.reconnectAttempts || 5;
+                this.reconnectDelay = config.reconnectDelay || 1000;
+                this.headers = config.headers || {};
+                
+                // Internal state
+                this.connectionToken = null;
+                this.eventSource = null;
+                this.subscriptions = new Map();
+                this.connectionState = 'disconnected';
+                this.reconnectCount = 0;
+                
+                // Event handlers
+                this.onConnectionChange = config.onConnectionChange || (() => {});
+                this.onError = config.onError || console.error;
+                this.onDebug = config.onDebug || (this.debug ? console.log : () => {});
+            }
+
+            async makeReservation() {
+                try {
+                    this.onDebug('Making GraphQL-SSE reservation...');
+                    
+                    const response = await fetch(this.baseUrl, {
+                        method: 'PUT',
+                        headers: this.headers
+                    });
+
+                    if (!response.ok) {
+                        throw new Error(`Reservation failed: ${response.status} ${response.statusText}`);
+                    }
+
+                    this.connectionToken = await response.text();
+                    this.onDebug('Reservation successful:', this.connectionToken);
+                    
+                    return this.connectionToken;
+                } catch (error) {
+                    this.onError('Reservation error:', error);
+                    throw error;
+                }
+            }
+
+            async executeOperation(operationId, query, variables = {}) {
+                if (!this.connectionToken) {
+                    throw new Error('Must make reservation before executing operations');
+                }
+
+                try {
+                    this.onDebug('Executing GraphQL operation:', operationId);
+                    
+                    const response = await fetch(this.baseUrl, {
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/json',
+                            'X-GraphQL-Event-Stream-Token': this.connectionToken,
+                            ...this.headers
+                        },
+                        body: JSON.stringify({
+                            query,
+                            variables,
+                            extensions: {
+                                operationId
+                            }
+                        })
+                    });
+
+                    if (!response.ok) {
+                        throw new Error(`Operation failed: ${response.status} ${response.statusText}`);
+                    }
+
+                    const result = await response.json();
+                    this.onDebug('Operation accepted:', result);
+                    
+                    return result;
+                } catch (error) {
+                    this.onError('Operation error:', error);
+                    throw error;
+                }
+            }
+
+            async connect() {
+                if (!this.connectionToken) {
+                    throw new Error('Must make reservation before connecting');
+                }
+
+                if (this.eventSource) {
+                    this.disconnect();
+                }
+
+                try {
+                    this.connectionState = 'connecting';
+                    this.onConnectionChange(this.connectionState);
+                    
+                    const sseUrl = `${this.baseUrl}?token=${encodeURIComponent(this.connectionToken)}`;
+                    this.onDebug('Establishing SSE connection:', sseUrl);
+                    
+                    this.eventSource = new EventSource(sseUrl);
+                    
+                    this.eventSource.onopen = () => {
+                        this.connectionState = 'connected';
+                        this.reconnectCount = 0;
+                        this.onConnectionChange(this.connectionState);
+                        this.onDebug('SSE connection established');
+                    };
+
+                    this.eventSource.onmessage = (event) => {
+                        this.handleSSEMessage(event);
+                    };
+
+                    // Listen for specific event types (GraphQL-SSE protocol)
+                    this.eventSource.addEventListener('test', (event) => {
+                        this.handleSSEMessage(event);
+                    });
+
+                    this.eventSource.addEventListener('next', (event) => {
+                        this.handleSSEMessage(event);
+                    });
+
+                    this.eventSource.addEventListener('complete', (event) => {
+                        this.handleSSEMessage(event);
+                    });
+
+                    this.eventSource.onerror = (error) => {
+                        this.onError('SSE connection error:', error);
+                        this.connectionState = 'error';
+                        this.onConnectionChange(this.connectionState);
+                        this.attemptReconnection();
+                    };
+
+                } catch (error) {
+                    this.connectionState = 'error';
+                    this.onConnectionChange(this.connectionState);
+                    this.onError('Connection error:', error);
+                    throw error;
+                }
+            }
+
+            handleSSEMessage(event) {
+                try {
+                    const data = JSON.parse(event.data);
+                    this.onDebug('Received SSE message:', data);
+
+                    // Handle different message types
+                    if (data.type === 'test') {
+                        this.onDebug('Connection test successful:', data);
+                    } else if (data.id && data.payload) {
+                        this.onDebug('Processing next event:', data);
+                        this.handleNextEvent(data);
+                    } else {
+                        this.onDebug('Unhandled message type:', data);
+                    }
+                } catch (error) {
+                    this.onError('Error parsing SSE message:', error, event.data);
+                }
+            }
+
+            handleNextEvent(data) {
+                const operationId = data.id;
+                const subscription = this.subscriptions.get(operationId);
+                
+                this.onDebug(`Looking for subscription ${operationId}, found:`, !!subscription);
+                this.onDebug('Available subscriptions:', Array.from(this.subscriptions.keys()));
+                this.onDebug('Payload to send:', data.payload);
+                
+                if (subscription && subscription.observer) {
+                    subscription.observer.next(data.payload);
+                } else {
+                    this.onDebug('No subscription found for operation:', operationId);
+                }
+            }
+
+            async subscribe(operationId, query, variables = {}) {
+                await this.executeOperation(operationId, query, variables);
+
+                return {
+                    subscribe: (observer) => {
+                        this.subscriptions.set(operationId, {
+                            query,
+                            variables,
+                            observer,
+                            createdAt: Date.now()
+                        });
+
+                        this.onDebug('Subscription registered:', operationId);
+
+                        return {
+                            unsubscribe: () => {
+                                this.subscriptions.delete(operationId);
+                                this.onDebug('Subscription removed:', operationId);
+                            }
+                        };
+                    }
+                };
+            }
+
+            async attemptReconnection() {
+                if (this.reconnectCount >= this.reconnectAttempts) {
+                    this.onError('Max reconnection attempts reached');
+                    return;
+                }
+
+                this.reconnectCount++;
+                const delay = this.reconnectDelay * Math.pow(2, this.reconnectCount - 1);
+                
+                this.onDebug(`Reconnecting in ${delay}ms (attempt ${this.reconnectCount}/${this.reconnectAttempts})`);
+                
+                setTimeout(async () => {
+                    try {
+                        await this.makeReservation();
+                        
+                        const subscriptionsToRestore = Array.from(this.subscriptions.entries());
+                        
+                        for (const [operationId, subscription] of subscriptionsToRestore) {
+                            await this.executeOperation(operationId, subscription.query, subscription.variables);
+                        }
+                        
+                        await this.connect();
+                    } catch (error) {
+                        this.onError('Reconnection failed:', error);
+                        this.attemptReconnection();
+                    }
+                }, delay);
+            }
+
+            disconnect() {
+                if (this.eventSource) {
+                    this.eventSource.close();
+                    this.eventSource = null;
+                }
+                
+                this.connectionState = 'disconnected';
+                this.onConnectionChange(this.connectionState);
+                this.connectionToken = null;
+                this.reconnectCount = 0;
+                
+                for (const [operationId, subscription] of this.subscriptions) {
+                    if (subscription.observer) {
+                        subscription.observer.complete();
+                    }
+                }
+                this.subscriptions.clear();
+                
+                this.onDebug('Disconnected and cleaned up');
+            }
+
+            getConnectionState() {
+                return {
+                    state: this.connectionState,
+                    token: this.connectionToken,
+                    activeSubscriptions: this.subscriptions.size,
+                    reconnectCount: this.reconnectCount
+                };
+            }
+        }
+
+        // Global state
+        let client = null;
+        let messageCount = 0;
+        let subscriptionCount = 0;
+
+        // DOM elements
+        const connectionStatus = document.getElementById('connection-status');
+        const connectBtn = document.getElementById('connect-btn');
+        const disconnectBtn = document.getElementById('disconnect-btn');
+        const subscribeBtn = document.getElementById('subscribe-btn');
+        const subscribeAllBtn = document.getElementById('subscribe-all-btn');
+        const clearLogsBtn = document.getElementById('clear-logs-btn');
+        const postIdInput = document.getElementById('post-id');
+        const logsContainer = document.getElementById('logs');
+        const subscriptionsList = document.getElementById('subscriptions-list');
+        const postUpdatesContainer = document.getElementById('post-updates');
+
+        // Stats elements
+        const activeSubscriptionsStat = document.getElementById('active-subscriptions');
+        const messagesReceivedStat = document.getElementById('messages-received');
+        const reconnectCountStat = document.getElementById('reconnect-count');
+
+        // GraphQL queries
+        const POST_UPDATED_QUERY = `
+            subscription PostUpdated($id: ID!) {
+                postUpdated(id: $id) {
+                    id
+                    title
+                    status
+                    content
+                    date
+                    modified
+                    author {
+                        node {
+                            id
+                            name
+                        }
+                    }
+                }
+            }
+        `;
+
+        const ALL_POSTS_QUERY = `
+            subscription {
+                postUpdated {
+                    id
+                    title
+                    status
+                    modified
+                    author {
+                        node {
+                            name
+                        }
+                    }
+                }
+            }
+        `;
+
+        // Logging function
+        function addLog(message, type = 'info') {
+            const timestamp = new Date().toLocaleTimeString();
+            const logEntry = document.createElement('div');
+            logEntry.className = `log-entry ${type}`;
+            logEntry.textContent = `[${timestamp}] ${message}`;
+            
+            logsContainer.appendChild(logEntry);
+            logsContainer.scrollTop = logsContainer.scrollHeight;
+        }
+
+        // Update connection status
+        function updateConnectionStatus(state) {
+            connectionStatus.className = `status ${state}`;
+            connectionStatus.textContent = `Connection Status: ${state.toUpperCase()}`;
+            
+            if (client && client.connectionToken) {
+                connectionStatus.textContent += ` (Token: ${client.connectionToken.substring(0, 8)}...)`;
+            }
+
+            // Update button states
+            const isConnected = state === 'connected';
+            connectBtn.disabled = isConnected;
+            disconnectBtn.disabled = !isConnected;
+            subscribeBtn.disabled = !isConnected;
+            subscribeAllBtn.disabled = !isConnected;
+        }
+
+        // Update stats
+        function updateStats() {
+            if (client) {
+                const state = client.getConnectionState();
+                activeSubscriptionsStat.textContent = state.activeSubscriptions;
+                reconnectCountStat.textContent = state.reconnectCount;
+            }
+            messagesReceivedStat.textContent = messageCount;
+        }
+
+        // Update subscriptions list
+        function updateSubscriptionsList() {
+            if (!client || client.subscriptions.size === 0) {
+                subscriptionsList.innerHTML = '<p>No active subscriptions</p>';
+                return;
+            }
+
+            subscriptionsList.innerHTML = '';
+            client.subscriptions.forEach((subscription, operationId) => {
+                const div = document.createElement('div');
+                div.className = 'subscription-card';
+                div.innerHTML = `
+                    <h4>Subscription: ${operationId}</h4>
+                    <p><strong>Created:</strong> ${new Date(subscription.createdAt).toLocaleString()}</p>
+                    <p><strong>Variables:</strong> ${JSON.stringify(subscription.variables)}</p>
+                    <button onclick="unsubscribe('${operationId}')" class="danger">Unsubscribe</button>
+                `;
+                subscriptionsList.appendChild(div);
+            });
+        }
+
+        // Handle post updates
+        function handlePostUpdate(data) {
+            console.log('handlePostUpdate received data:', data);
+            messageCount++;
+            updateStats();
+
+            // Check if this is a subscription confirmation message
+            if (data.data?.subscription) {
+                console.log('Received subscription confirmation:', data.data.subscription);
+                addLog(`Subscription confirmed: ${data.data.subscription.status}`, 'info');
+                return;
+            }
+
+            const postData = data.data?.postUpdated;
+            console.log('Extracted postData:', postData);
+            if (!postData) {
+                console.log('No postData found, data structure:', data);
+                return;
+            }
+
+            const updateDiv = document.createElement('div');
+            updateDiv.className = 'post-update';
+            updateDiv.innerHTML = `
+                <h4>📝 Post Updated: ${postData.title}</h4>
+                <p><strong>ID:</strong> ${postData.id} | <strong>Status:</strong> ${postData.status}</p>
+                <p><strong>Author:</strong> ${postData.author?.node?.name || 'Unknown'}</p>
+                <p><strong>Modified:</strong> ${new Date(postData.modified).toLocaleString()}</p>
+                <div style="margin-top: 8px; font-size: 12px; color: #6c757d;">
+                    Received at: ${new Date().toLocaleTimeString()}
+                </div>
+            `;
+
+            // Remove "no updates" message if it exists
+            const noUpdatesMsg = postUpdatesContainer.querySelector('p');
+            if (noUpdatesMsg && noUpdatesMsg.textContent.includes('No post updates')) {
+                postUpdatesContainer.removeChild(noUpdatesMsg);
+            }
+
+            postUpdatesContainer.insertBefore(updateDiv, postUpdatesContainer.firstChild);
+
+            // Keep only last 10 updates
+            while (postUpdatesContainer.children.length > 10) {
+                postUpdatesContainer.removeChild(postUpdatesContainer.lastChild);
+            }
+        }
+
+        // Initialize client
+        function initializeClient() {
+            client = new GraphQLSSEClient({
+                baseUrl: '/graphql/stream',
+                debug: true,
+                onConnectionChange: (state) => {
+                    updateConnectionStatus(state);
+                    updateStats();
+                },
+                onError: (message, ...args) => {
+                    addLog(`Error: ${message}`, 'error');
+                    console.error('SSE Error:', message, ...args);
+                },
+                onDebug: (message, ...args) => {
+                    addLog(`Debug: ${message}`, 'debug');
+                    console.log('SSE Debug:', message, ...args);
+                }
+            });
+        }
+
+        // Connect function
+        async function connect() {
+            try {
+                addLog('Connecting to GraphQL-SSE...', 'info');
+                await client.makeReservation();
+                await client.connect();
+                addLog('Connected successfully!', 'success');
+                updateSubscriptionsList();
+            } catch (error) {
+                addLog(`Connection failed: ${error.message}`, 'error');
+            }
+        }
+
+        // Disconnect function
+        function disconnect() {
+            if (client) {
+                client.disconnect();
+                addLog('Disconnected', 'info');
+                updateSubscriptionsList();
+                updateStats();
+            }
+        }
+
+        // Subscribe to specific post
+        async function subscribeToPost() {
+            const postId = postIdInput.value.trim();
+            if (!postId) {
+                addLog('Please enter a Post ID', 'error');
+                return;
+            }
+
+            try {
+                const operationId = `post-${postId}-${Date.now()}`;
+                const subscription = await client.subscribe(operationId, POST_UPDATED_QUERY, { id: postId });
+                
+                subscription.subscribe({
+                    next: (data) => {
+                        addLog(`Received update for post ${postId}`, 'success');
+                        handlePostUpdate(data);
+                    },
+                    error: (error) => {
+                        addLog(`Subscription error: ${error.message}`, 'error');
+                    },
+                    complete: () => {
+                        addLog(`Subscription ${operationId} completed`, 'info');
+                        updateSubscriptionsList();
+                    }
+                });
+
+                addLog(`Subscribed to post updates for ID: ${postId}`, 'success');
+                updateSubscriptionsList();
+                updateStats();
+            } catch (error) {
+                addLog(`Subscription failed: ${error.message}`, 'error');
+            }
+        }
+
+        // Subscribe to all posts
+        async function subscribeToAllPosts() {
+            try {
+                const operationId = `all-posts-${Date.now()}`;
+                const subscription = await client.subscribe(operationId, ALL_POSTS_QUERY, {});
+                
+                subscription.subscribe({
+                    next: (data) => {
+                        addLog('Received update for any post', 'success');
+                        handlePostUpdate(data);
+                    },
+                    error: (error) => {
+                        addLog(`Subscription error: ${error.message}`, 'error');
+                    },
+                    complete: () => {
+                        addLog(`Subscription ${operationId} completed`, 'info');
+                        updateSubscriptionsList();
+                    }
+                });
+
+                addLog('Subscribed to all post updates', 'success');
+                updateSubscriptionsList();
+                updateStats();
+            } catch (error) {
+                addLog(`Subscription failed: ${error.message}`, 'error');
+            }
+        }
+
+        // Unsubscribe function (called from HTML)
+        window.unsubscribe = function(operationId) {
+            if (client && client.subscriptions.has(operationId)) {
+                client.subscriptions.delete(operationId);
+                addLog(`Unsubscribed from ${operationId}`, 'info');
+                updateSubscriptionsList();
+                updateStats();
+            }
+        };
+
+        // Clear logs
+        function clearLogs() {
+            logsContainer.innerHTML = '';
+            messageCount = 0;
+            updateStats();
+        }
+
+        // Event listeners
+        connectBtn.addEventListener('click', connect);
+        disconnectBtn.addEventListener('click', disconnect);
+        subscribeBtn.addEventListener('click', subscribeToPost);
+        subscribeAllBtn.addEventListener('click', subscribeToAllPosts);
+        clearLogsBtn.addEventListener('click', clearLogs);
+
+        // Allow Enter key in post ID input
+        postIdInput.addEventListener('keypress', (e) => {
+            if (e.key === 'Enter' && !subscribeBtn.disabled) {
+                subscribeToPost();
+            }
+        });
+
+        // Initialize
+        initializeClient();
+        addLog('GraphQL-SSE client initialized', 'info');
+        updateStats();
+    </script>
+</body>
+</html>

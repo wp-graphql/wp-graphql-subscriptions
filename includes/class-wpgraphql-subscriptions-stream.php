@@ -37,7 +37,8 @@ class WPGraphQL_Subscriptions_Stream {
         
         $this->connection_id = $connection_id;
         $this->event_queue = WPGraphQL_Event_Queue::get_instance();
-        $this->last_check_time = microtime( true );
+        // Start checking from 5 seconds ago to catch events queued during stream initialization
+        $this->last_check_time = microtime( true ) - 5;
 
         // Disable WordPress shutdown actions that might interfere
         remove_all_actions( 'shutdown' );
@@ -98,8 +99,19 @@ class WPGraphQL_Subscriptions_Stream {
                 return $this->send_operation_result( $event );
             }
             
+            // Handle subscription confirmations
+            if ( $event['type'] === 'subscription_confirmation' ) {
+                $this->log_debug( "Found subscription confirmation event", [
+                    'event_data_keys' => array_keys( $event['data'] ?? [] ),
+                    'event_token' => isset( $event['data']['token'] ) ? substr( $event['data']['token'], 0, 8 ) . '...' : 'none',
+                    'this_connection' => substr( $this->connection_id, 0, 8 ) . '...'
+                ]);
+                return $this->handle_subscription_confirmation( $event );
+            }
+            
             // Handle WordPress subscription events (global events like postUpdated)
-            if ( empty( $event['operation_id'] ) ) {
+            // Skip subscription_confirmation events as they're handled above
+            if ( empty( $event['operation_id'] ) && $event['type'] !== 'subscription_confirmation' ) {
                 return $this->handle_wordpress_subscription_event( $event );
             }
             
@@ -160,6 +172,36 @@ class WPGraphQL_Subscriptions_Stream {
         
         // Note: We don't send complete events automatically since subscriptions
         // are long-running operations that complete when the connection closes
+        
+        return true;
+    }
+    
+    /**
+     * Handle subscription confirmation events
+     *
+     * @param array $event Event data
+     * @return bool True if event was processed
+     */
+    private function handle_subscription_confirmation( array $event ): bool {
+        
+        $event_data = $event['data'] ?? [];
+        $token = $event_data['token'] ?? null;
+        $operation_id = $event_data['operation_id'] ?? null;
+        $confirmation = $event_data['subscription_confirmation'] ?? null;
+        
+        // Only process confirmations for this connection's token
+        if ( $token !== $this->connection_id || ! $operation_id || ! $confirmation ) {
+            return false;
+        }
+        
+        $this->log_info( "Processing subscription confirmation for operation {$operation_id}" );
+        
+        // Send subscription confirmation as a 'next' event
+        $this->send_next_event( $operation_id, [
+            'data' => [
+                'subscription' => $confirmation
+            ]
+        ]);
         
         return true;
     }
@@ -840,9 +882,15 @@ class WPGraphQL_Subscriptions_Stream {
         
         try {
             // Get events from database since last check
+            $this->log_debug( "Polling for events", [
+                'last_check_time' => $this->last_check_time,
+                'last_check_date' => date( 'Y-m-d H:i:s', (int) floor( $this->last_check_time ) )
+            ]);
+            
             $events = $this->event_queue->get_events_since( $this->last_check_time );
             
             if ( empty( $events ) ) {
+                $this->log_debug( "No events found in queue" );
                 return 0;
             }
             

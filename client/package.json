@@ -1,0 +1,58 @@
+{
+  "name": "@wpgraphql/subscriptions-client",
+  "version": "0.3.0",
+  "description": "JavaScript client library for GraphQL-SSE protocol subscriptions with Apollo Client integration",
+  "main": "graphql-sse-client.js",
+  "module": "graphql-sse-client.js",
+  "type": "module",
+  "keywords": [
+    "graphql",
+    "subscriptions",
+    "sse",
+    "server-sent-events",
+    "apollo",
+    "wordpress",
+    "wpgraphql",
+    "real-time"
+  ],
+  "author": "WPGraphQL Team",
+  "license": "GPL-3.0-or-later",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/wp-graphql/wp-graphql-subscriptions"
+  },
+  "bugs": {
+    "url": "https://github.com/wp-graphql/wp-graphql-subscriptions/issues"
+  },
+  "homepage": "https://github.com/wp-graphql/wp-graphql-subscriptions#readme",
+  "files": [
+    "graphql-sse-client.js",
+    "README.md",
+    "demo-apollo-react.html",
+    "demo-vanilla-js.html"
+  ],
+  "scripts": {
+    "demo:apollo": "echo 'Open demo-apollo-react.html in your browser'",
+    "demo:vanilla": "echo 'Open demo-vanilla-js.html in your browser'",
+    "test": "echo 'Tests coming soon'"
+  },
+  "peerDependencies": {
+    "@apollo/client": "^3.0.0",
+    "react": "^16.8.0 || ^17.0.0 || ^18.0.0"
+  },
+  "peerDependenciesMeta": {
+    "@apollo/client": {
+      "optional": true
+    },
+    "react": {
+      "optional": true
+    }
+  },
+  "engines": {
+    "node": ">=14.0.0"
+  },
+  "browserslist": [
+    "defaults",
+    "not IE 11"
+  ]
+}

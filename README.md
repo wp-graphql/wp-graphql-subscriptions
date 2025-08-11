@@ -11,6 +11,7 @@ This plugin extends WPGraphQL to support GraphQL Subscriptions, allowing clients
 
 ## Features
 
+### Server-Side (WordPress Plugin)
 - ✅ **GraphQL Subscriptions Schema** - Adds `RootSubscription` type to WPGraphQL schema
 - ✅ **Real-time Event System** - Centralized event tracking and emission
 - ✅ **Server-Sent Events (SSE)** - HTTP-based real-time transport
@@ -18,6 +19,14 @@ This plugin extends WPGraphQL to support GraphQL Subscriptions, allowing clients
 - ✅ **WordPress Native** - No external dependencies or services required
 - ✅ **Multi-process Safe** - Works with PHP-FPM and multiple concurrent connections
 - ✅ **Debug Tools** - Admin interface and WP-CLI commands for monitoring
+
+### Client-Side (JavaScript Library)
+- ✅ **GraphQL-SSE Client Library** - Ready-to-use JavaScript client (`/client/`)
+- ✅ **Apollo Client Integration** - Drop-in support for React/Apollo apps
+- ✅ **Framework Agnostic** - Works with React, Vue, Angular, or vanilla JS
+- ✅ **Automatic Reconnection** - Exponential backoff with configurable retry
+- ✅ **Multiple Working Demos** - 4 complete examples: Production Build (Vite+TypeScript), Apollo React, React Simple, and Vanilla JS
+- ✅ **Production Ready Examples** - TypeScript, modern build tools, and real Apollo Client integration
 
 ## Current Status
 
@@ -201,6 +210,78 @@ wp-graphql-subscriptions/
 └── LICENSE
 ```
 
+## Client-Side Usage
+
+### JavaScript Client Library
+
+The plugin includes a complete JavaScript client library for easy integration with any frontend application:
+
+#### Apollo Client Integration
+```javascript
+import { GraphQLSSELink } from './client/graphql-sse-client.js';
+import { ApolloClient, InMemoryCache } from '@apollo/client';
+
+const sseLink = new GraphQLSSELink({
+  baseUrl: '/graphql/stream'
+});
+
+const client = new ApolloClient({
+  link: sseLink,
+  cache: new InMemoryCache()
+});
+
+// Use with React hooks
+const { data } = useSubscription(gql`
+  subscription {
+    postUpdated(id: "123") {
+      id
+      title
+      modified
+    }
+  }
+`);
+```
+
+#### Vanilla JavaScript
+```javascript
+import { GraphQLSSEClient } from './client/graphql-sse-client.js';
+
+const client = new GraphQLSSEClient({
+  baseUrl: '/graphql/stream'
+});
+
+await client.makeReservation();
+await client.connect();
+
+const subscription = await client.subscribe(
+  'my-subscription',
+  'subscription { postUpdated(id: "123") { id title } }'
+);
+
+subscription.subscribe({
+  next: (data) => console.log('Update:', data),
+  error: (error) => console.error('Error:', error)
+});
+```
+
+#### Live Demos
+
+**🎉 All 4 demos are fully working!**
+
+- **🏗️ Production Build Demo**: `cd client/demo-build && npm install && npm run dev`
+  - **Recommended**: Full Vite + TypeScript + Real Apollo Client setup
+  - Production-ready with modern build tools and proper development workflow
+- **⚛️ Apollo React Demo**: Open `/client/demo-apollo-react.html`
+  - Browser-based Apollo-compatible client with React hooks
+- **⚛️ React Simple Demo**: Open `/client/demo-react-simple.html` 
+  - React with direct GraphQL-SSE client integration (no Apollo)
+- **🔧 Vanilla JS Demo**: Open `/client/demo-vanilla-js.html`
+  - Pure JavaScript implementation for educational purposes
+
+**Demo Landing Page**: Open `/client/test-demos.html` to access all demos with setup instructions.
+
+See `/client/README.md` for complete documentation and examples.
+
 ### WP-CLI Commands
 
 ```bash
@@ -358,6 +439,10 @@ GPL v3 or later. See [LICENSE](LICENSE) file for details.
 - **✅ Enhanced WP-CLI Commands** - Connection monitoring and cleanup tools
 - **✅ Scheduled Cleanup** - Hourly cleanup of expired connections and subscriptions
 - **✅ Modular Architecture** - Each class in its own file for better maintainability
+- **✅ Complete Client-Side Library** - JavaScript GraphQL-SSE client with Apollo Link integration
+- **✅ 4 Working Demo Applications** - Production Build (Vite+TypeScript), Apollo React, React Simple, Vanilla JS
+- **✅ Subscription Confirmation Flow** - Proper Apollo Client loading state management
+- **✅ Production-Ready Examples** - TypeScript, modern build tools, comprehensive documentation
 
 ### 0.2.0 - Previous
 - **✅ GraphQL-SSE Protocol Compliance** - Full implementation of the GraphQL-SSE specification

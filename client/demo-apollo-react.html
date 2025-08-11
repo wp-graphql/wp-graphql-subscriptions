@@ -1,0 +1,652 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>WPGraphQL Subscriptions - Apollo React Demo</title>
+    <script src="https://unpkg.com/react@18/umd/react.development.js"></script>
+    <script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            max-width: 800px;
+            margin: 0 auto;
+            padding: 20px;
+            background: #f5f5f5;
+        }
+        .container {
+            background: white;
+            border-radius: 8px;
+            padding: 24px;
+            margin-bottom: 16px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+        .controls {
+            display: flex;
+            gap: 12px;
+            align-items: center;
+            flex-wrap: wrap;
+            margin-bottom: 16px;
+        }
+        .btn {
+            padding: 8px 16px;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 14px;
+        }
+        .btn-primary {
+            background: #007cba;
+            color: white;
+        }
+        .btn-secondary {
+            background: #6c757d;
+            color: white;
+        }
+        .btn:disabled {
+            opacity: 0.6;
+            cursor: not-allowed;
+        }
+        .post-id-input {
+            padding: 8px;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            width: 100px;
+        }
+        .status {
+            padding: 12px;
+            border-radius: 4px;
+            margin: 12px 0;
+        }
+        .status.connected {
+            background: #d4edda;
+            color: #155724;
+            border: 1px solid #c3e6cb;
+        }
+        .status.disconnected {
+            background: #f8d7da;
+            color: #721c24;
+            border: 1px solid #f5c6cb;
+        }
+        .status.connecting {
+            background: #fff3cd;
+            color: #856404;
+            border: 1px solid #ffeaa7;
+        }
+        .post-card {
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            padding: 16px;
+            margin: 12px 0;
+            background: #f8f9fa;
+            transition: all 0.3s ease;
+        }
+        .post-card.updated {
+            border-color: #28a745;
+            background: #d4edda;
+            transform: scale(1.02);
+        }
+        .logs {
+            background: #f8f9fa;
+            border: 1px solid #dee2e6;
+            border-radius: 4px;
+            padding: 12px;
+            max-height: 300px;
+            overflow-y: auto;
+            font-family: monospace;
+            font-size: 12px;
+        }
+        .log-entry {
+            margin: 4px 0;
+            padding: 2px 0;
+            border-bottom: 1px solid #eee;
+        }
+        .info { color: #007cba; }
+        .error { color: #dc3545; }
+        .success { color: #28a745; }
+    </style>
+</head>
+<body>
+    <div id="root"></div>
+
+    <script>
+        // Embedded GraphQL-SSE Client (simplified for demo)
+        class GraphQLSSEClient {
+            constructor(baseUrl = '/graphql/stream') {
+                this.baseUrl = baseUrl;
+                this.connectionState = 'disconnected';
+                this.token = null;
+                this.eventSource = null;
+                this.subscriptions = new Map();
+                this.activeSubscriptions = 0;
+                this.reconnectCount = 0;
+                
+                // Public event handlers
+                this.onConnectionChange = null;
+                this.onError = null;
+                this.onDebug = null;
+            }
+
+            log(message, type = 'info') {
+                console.log(`SSE Debug: ${message}`);
+                if (this.onDebug) {
+                    this.onDebug(message, type);
+                }
+            }
+
+            async makeReservation() {
+                this.log('Making GraphQL-SSE reservation...');
+                
+                try {
+                    const response = await fetch(this.baseUrl, {
+                        method: 'PUT',
+                        headers: {
+                            'Content-Type': 'application/json',
+                            'Accept': 'application/json'
+                        }
+                    });
+
+                    if (!response.ok) {
+                        throw new Error(`Reservation failed: ${response.status} ${response.statusText}`);
+                    }
+
+                    const result = await response.json();
+                    this.token = result.token;
+                    this.log(`Reservation successful: ${this.token}`);
+                    return result;
+                } catch (error) {
+                    this.log(`Reservation error: ${error.message}`, 'error');
+                    if (this.onError) this.onError(error);
+                    throw error;
+                }
+            }
+
+            async connect() {
+                if (!this.token) {
+                    await this.makeReservation();
+                }
+
+                this.log(`Establishing SSE connection: ${this.baseUrl}?token=${this.token}`);
+                this.connectionState = 'connecting';
+                if (this.onConnectionChange) this.onConnectionChange(this.connectionState);
+
+                return new Promise((resolve, reject) => {
+                    try {
+                        this.eventSource = new EventSource(`${this.baseUrl}?token=${this.token}`);
+                        
+                        this.eventSource.onopen = () => {
+                            this.log('SSE connection established');
+                            this.connectionState = 'connected';
+                            if (this.onConnectionChange) this.onConnectionChange(this.connectionState);
+                            resolve();
+                        };
+
+                        this.eventSource.onerror = (error) => {
+                            this.log(`SSE connection error: ${error}`, 'error');
+                            if (this.connectionState !== 'connected') {
+                                this.connectionState = 'disconnected';
+                                if (this.onConnectionChange) this.onConnectionChange(this.connectionState);
+                                reject(new Error('Failed to establish SSE connection'));
+                            }
+                        };
+
+                        // Listen for typed SSE events
+                        this.eventSource.addEventListener('test', (event) => {
+                            const data = JSON.parse(event.data);
+                            this.log(`Received test message: ${JSON.stringify(data)}`);
+                        });
+
+                        this.eventSource.addEventListener('next', (event) => {
+                            const data = JSON.parse(event.data);
+                            this.log(`Received next event: ${JSON.stringify(data)}`);
+                            this.log(`Event ID: ${data.id}, Payload keys: ${Object.keys(data.payload || {}).join(', ')}`);
+                            this.handleNextEvent(data);
+                        });
+
+                        this.eventSource.addEventListener('complete', (event) => {
+                            const data = JSON.parse(event.data);
+                            this.log(`Received complete event: ${JSON.stringify(data)}`);
+                        });
+                        
+                    } catch (error) {
+                        this.log(`Connection setup error: ${error.message}`, 'error');
+                        reject(error);
+                    }
+                });
+            }
+
+            handleNextEvent(data) {
+                const { id, payload } = data;
+                const subscription = this.subscriptions.get(id);
+                
+                if (subscription) {
+                    subscription.observers.forEach(observer => {
+                        try {
+                            observer.next(payload);
+                        } catch (error) {
+                            this.log(`Observer error: ${error.message}`, 'error');
+                        }
+                    });
+                }
+            }
+
+            async subscribe(operationId, query, variables = {}) {
+                if (this.connectionState !== 'connected') {
+                    throw new Error('Must make reservation before executing operations');
+                }
+
+                this.log(`Starting subscription setup for: ${operationId}`);
+
+                // Execute the GraphQL operation
+                try {
+                    this.log(`Executing GraphQL operation: ${operationId}`);
+                    const response = await fetch(this.baseUrl, {
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/json',
+                            'X-GraphQL-Event-Stream-Token': this.token
+                        },
+                        body: JSON.stringify({
+                            query,
+                            variables,
+                            extensions: {
+                                operationId
+                            }
+                        })
+                    });
+
+                    if (!response.ok) {
+                        throw new Error(`Operation failed: ${response.status} ${response.statusText}`);
+                    }
+
+                    const result = await response.json();
+                    this.log(`Operation accepted: ${JSON.stringify(result)}`);
+                    this.log(`GraphQL operation executed for: ${operationId}`);
+                } catch (error) {
+                    this.log(`Operation error: ${error.message}`, 'error');
+                    throw error;
+                }
+
+                // Create subscription object
+                const subscription = {
+                    operationId,
+                    query,
+                    variables,
+                    observers: []
+                };
+
+                this.subscriptions.set(operationId, subscription);
+                this.activeSubscriptions++;
+
+                this.log(`Subscription registered: ${operationId}`);
+                this.log(`Total subscriptions now: ${this.activeSubscriptions}`);
+
+                return {
+                    subscribe: (observer) => {
+                        subscription.observers.push(observer);
+                        this.log(`Registering observer for: ${operationId}`);
+                        
+                        return {
+                            unsubscribe: () => {
+                                const index = subscription.observers.indexOf(observer);
+                                if (index > -1) {
+                                    subscription.observers.splice(index, 1);
+                                }
+                                if (subscription.observers.length === 0) {
+                                    this.subscriptions.delete(operationId);
+                                    this.activeSubscriptions--;
+                                }
+                            }
+                        };
+                    }
+                };
+            }
+
+            disconnect() {
+                if (this.eventSource) {
+                    this.eventSource.close();
+                    this.eventSource = null;
+                }
+                this.connectionState = 'disconnected';
+                this.token = null;
+                this.subscriptions.clear();
+                this.activeSubscriptions = 0;
+                if (this.onConnectionChange) this.onConnectionChange(this.connectionState);
+                this.log('Disconnected from GraphQL-SSE');
+            }
+
+            getConnectionState() {
+                return {
+                    state: this.connectionState,
+                    token: this.token,
+                    activeSubscriptions: this.activeSubscriptions,
+                    reconnectCount: this.reconnectCount
+                };
+            }
+        }
+
+        // Simple Apollo-compatible implementation
+        const ApolloClient = class {
+            constructor(options) {
+                this.link = options.link;
+                this.cache = options.cache;
+            }
+        };
+
+        const InMemoryCache = class {
+            constructor() {}
+        };
+
+        const ApolloProvider = ({ client, children }) => {
+            return React.createElement('div', { 'data-apollo-provider': true }, children);
+        };
+
+        const useSubscription = (query, options = {}) => {
+            const [data, setData] = React.useState(null);
+            const [loading, setLoading] = React.useState(true);
+            const [error, setError] = React.useState(null);
+            
+            React.useEffect(() => {
+                console.log('useSubscription called with query:', query);
+                
+                // Get the global SSE client
+                const client = window.globalSSEClient;
+                if (!client) {
+                    setError(new Error('GraphQL-SSE client not found'));
+                    setLoading(false);
+                    return;
+                }
+                
+                if (client.connectionState !== 'connected') {
+                    setError(new Error('GraphQL-SSE client not connected'));
+                    setLoading(false);
+                    return;
+                }
+                
+                const operationId = `apollo-sub-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+                const queryString = typeof query === 'string' ? query : `
+                    subscription PostUpdated($id: ID!) {
+                        postUpdated(id: $id) {
+                            id
+                            title
+                            status
+                            content
+                            date
+                            modified
+                            author {
+                                node {
+                                    id
+                                    name
+                                }
+                            }
+                        }
+                    }
+                `;
+                
+                let subscription = null;
+                
+                const setupSubscription = async () => {
+                    try {
+                        console.log('Setting up subscription:', operationId);
+                        const sub = await client.subscribe(operationId, queryString, options.variables || {});
+                        
+                        subscription = sub.subscribe({
+                            next: (result) => {
+                                console.log('Apollo subscription received:', result);
+                                
+                                // Handle subscription confirmation
+                                if (result.data?.subscription) {
+                                    console.log('Subscription confirmed:', result.data.subscription);
+                                    setLoading(false);
+                                    return;
+                                }
+                                
+                                // Handle actual data
+                                setData(result.data);
+                                setLoading(false);
+                            },
+                            error: (err) => {
+                                console.error('Apollo subscription error:', err);
+                                setError(err);
+                                setLoading(false);
+                            }
+                        });
+                        
+                    } catch (err) {
+                        console.error('Subscription setup error:', err);
+                        setError(err);
+                        setLoading(false);
+                    }
+                };
+                
+                setupSubscription();
+                
+                return () => {
+                    if (subscription) {
+                        subscription.unsubscribe();
+                    }
+                };
+            }, [options.variables?.id]);
+            
+            return { data, loading, error };
+        };
+
+        // GraphQL template literal tag
+        const gql = (strings, ...values) => {
+            let result = strings[0];
+            for (let i = 0; i < values.length; i++) {
+                result += values[i] + strings[i + 1];
+            }
+            return { loc: { source: { body: result } } };
+        };
+
+        // Main App Component
+        const App = () => {
+            const [connectionState, setConnectionState] = React.useState('disconnected');
+            const [postId, setPostId] = React.useState('394');
+            const [logs, setLogs] = React.useState([]);
+            const logsRef = React.useRef(null);
+
+            const addLog = React.useCallback((message, type = 'info') => {
+                const timestamp = new Date().toLocaleTimeString();
+                setLogs(prev => [...prev, { message, type, timestamp }]);
+                
+                // Auto-scroll logs
+                setTimeout(() => {
+                    if (logsRef.current) {
+                        logsRef.current.scrollTop = logsRef.current.scrollHeight;
+                    }
+                }, 100);
+            }, []);
+
+            // Initialize SSE client
+            React.useEffect(() => {
+                const client = new GraphQLSSEClient();
+                window.globalSSEClient = client;
+
+                client.onConnectionChange = (state) => {
+                    setConnectionState(state);
+                    addLog(`Connection state: ${state}`, state === 'connected' ? 'success' : 'info');
+                };
+
+                client.onError = (error) => {
+                    addLog(`Error: ${error.message}`, 'error');
+                };
+
+                client.onDebug = (message, type = 'info') => {
+                    addLog(message, type);
+                };
+
+                return () => {
+                    client.disconnect();
+                };
+            }, [addLog]);
+
+            const connect = async () => {
+                try {
+                    await window.globalSSEClient.connect();
+                } catch (error) {
+                    addLog(`Connection failed: ${error.message}`, 'error');
+                }
+            };
+
+            const disconnect = () => {
+                window.globalSSEClient.disconnect();
+            };
+
+            return React.createElement('div', null,
+                React.createElement('h1', null, '🚀 WPGraphQL Subscriptions - Apollo React Demo'),
+                
+                React.createElement('div', { className: 'container' },
+                    React.createElement('h3', null, 'Connection Status'),
+                    React.createElement('div', { 
+                        className: `status ${connectionState}` 
+                    }, `Status: ${connectionState}`),
+                    
+                    React.createElement('div', { className: 'controls' },
+                        React.createElement('button', {
+                            className: 'btn btn-primary',
+                            onClick: connect,
+                            disabled: connectionState === 'connected'
+                        }, 'Connect'),
+                        
+                        React.createElement('button', {
+                            className: 'btn btn-secondary',
+                            onClick: disconnect,
+                            disabled: connectionState === 'disconnected'
+                        }, 'Disconnect'),
+                        
+                        React.createElement('label', null, 'Post ID:'),
+                        React.createElement('input', {
+                            type: 'text',
+                            value: postId,
+                            onChange: (e) => setPostId(e.target.value),
+                            className: 'post-id-input'
+                        })
+                    )
+                ),
+                
+                connectionState === 'connected' && React.createElement(PostSubscription, { postId }),
+                
+                React.createElement('div', { className: 'container' },
+                    React.createElement('h3', null, 'Debug Logs'),
+                    React.createElement('div', { className: 'logs', ref: logsRef },
+                        logs.map((log, index) =>
+                            React.createElement('div', {
+                                key: index,
+                                className: `log-entry ${log.type}`
+                            }, `${log.timestamp} - ${log.message}`)
+                        )
+                    )
+                )
+            );
+        };
+
+        // Post Subscription Component
+        const PostSubscription = ({ postId }) => {
+            const POST_UPDATED_SUBSCRIPTION = gql`
+                subscription PostUpdated($id: ID!) {
+                    postUpdated(id: $id) {
+                        id
+                        title
+                        status
+                        content
+                        date
+                        modified
+                        author {
+                            node {
+                                id
+                                name
+                            }
+                        }
+                    }
+                }
+            `;
+
+            const { data, loading, error } = useSubscription(POST_UPDATED_SUBSCRIPTION, {
+                variables: { id: postId }
+            });
+
+            const [posts, setPosts] = React.useState([]);
+            const [lastUpdate, setLastUpdate] = React.useState(null);
+
+            React.useEffect(() => {
+                if (data?.postUpdated) {
+                    console.log('Processing post update:', data.postUpdated);
+                    const post = data.postUpdated;
+                    setLastUpdate(Date.now());
+                    
+                    setPosts(prev => {
+                        const existing = prev.find(p => p.id === post.id);
+                        if (existing) {
+                            return prev.map(p => p.id === post.id ? { ...post, isUpdated: true } : p);
+                        } else {
+                            return [...prev, { ...post, isUpdated: true }];
+                        }
+                    });
+
+                    // Remove update indicator after animation
+                    setTimeout(() => {
+                        setPosts(prev => prev.map(p => ({ ...p, isUpdated: false })));
+                    }, 1000);
+                }
+            }, [data]);
+
+            if (loading) {
+                return React.createElement('div', { className: 'container' },
+                    React.createElement('div', { className: 'info' }, '⏳ Setting up subscription...')
+                );
+            }
+
+            if (error) {
+                return React.createElement('div', { className: 'container' },
+                    React.createElement('div', { className: 'error' }, 
+                        `❌ Subscription error: ${error.message}`
+                    )
+                );
+            }
+
+            return React.createElement('div', { className: 'container' },
+                React.createElement('h3', null, `Subscribed to Post Updates (ID: ${postId})`),
+                
+                lastUpdate && React.createElement('p', { className: 'info' },
+                    `Last update: ${new Date(lastUpdate).toLocaleTimeString()}`
+                ),
+                
+                posts.length === 0 
+                    ? React.createElement('p', null, `No post updates received yet. Try updating post #${postId} in WordPress admin.`)
+                    : posts.map(post =>
+                        React.createElement('div', {
+                            key: post.id,
+                            className: `post-card ${post.isUpdated ? 'updated' : ''}`
+                        },
+                            React.createElement('h4', null, post.title),
+                            React.createElement('p', null,
+                                React.createElement('strong', null, 'Status: '), post.status
+                            ),
+                            React.createElement('p', null,
+                                React.createElement('strong', null, 'Author: '), 
+                                post.author?.node?.name || 'Unknown'
+                            ),
+                            React.createElement('p', null,
+                                React.createElement('strong', null, 'Modified: '), 
+                                new Date(post.modified).toLocaleString()
+                            ),
+                            React.createElement('div', {
+                                dangerouslySetInnerHTML: {
+                                    __html: post.content?.substring(0, 200) + '...'
+                                }
+                            }),
+                            React.createElement('div', { style: { fontSize: '12px', color: '#666', marginTop: '8px' } },
+                                `Received at: ${new Date().toLocaleTimeString()}`
+                            )
+                        )
+                    )
+            );
+        };
+
+        // Render the app
+        ReactDOM.render(React.createElement(App), document.getElementById('root'));
+    </script>
+</body>
+</html>

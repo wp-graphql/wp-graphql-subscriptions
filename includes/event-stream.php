@@ -227,12 +227,22 @@ function handle_single_connection_mode(): void {
             exit;
         }
         
-        // Queue operation result for SSE stream
-        queue_operation_result( $token, $operation_id, $result );
+        // Store the subscription in the connection manager
+        $connection_manager = WPGraphQL_Connection_Manager::get_instance();
+        $connection = $connection_manager->get_connection( $token );
         
-        log_graphql_sse( 'info', 'GraphQL operation queued successfully', [
-            'operation_id' => $operation_id
-        ]);
+        if ( $connection ) {
+            $connection->register_subscription( $operation_id, $request_data['query'], $request_data['variables'] ?? [] );
+            
+            log_graphql_sse( 'info', 'Subscription registered successfully', [
+                'operation_id' => $operation_id,
+                'token' => substr( $token, 0, 8 ) . '...'
+            ]);
+            
+            // Send subscription confirmation via SSE immediately
+            // This needs to be sent to all active SSE connections for this token
+            send_subscription_confirmation( $token, $operation_id, $request_data['query'] );
+        }
         
         // Send response (202 status already set above)
         echo wp_json_encode( [
@@ -268,7 +278,8 @@ function handle_reservation_request() {
     ]);
     
     http_response_code( 201 );
-    echo $token;
+    header( 'Content-Type: application/json' );
+    echo json_encode( ['token' => $token] );
     exit;
 }
 
@@ -299,10 +310,10 @@ function handle_stop_operation() {
  */
 function get_reservation_token() {
     
-    // Check header first
+    // Check custom header first (preferred method)
     $token = $_SERVER['HTTP_X_GRAPHQL_EVENT_STREAM_TOKEN'] ?? null;
     
-    // Fallback to query parameter
+    // Fallback to query parameter (for SSE connections)
     if ( ! $token ) {
         $token = $_GET['token'] ?? null;
     }
@@ -477,6 +488,35 @@ function queue_operation_result( $token, $operation_id, $result ) {
         'token' => $token,
         'operation_id' => $operation_id,
         'result' => $result
+    ]);
+}
+
+/**
+ * Send subscription confirmation via SSE
+ */
+function send_subscription_confirmation( $token, $operation_id, $query ) {
+    
+    // Add subscription confirmation to event queue so SSE stream can pick it up
+    $event_queue = WPGraphQL_Event_Queue::get_instance();
+    
+    $confirmation_data = [
+        'token' => $token,
+        'operation_id' => $operation_id,
+        'subscription_confirmation' => [
+            'id' => $operation_id,
+            'status' => 'active',
+            'query' => $query
+        ]
+    ];
+    
+    // Add event - use operation_id as node_id so it gets the operation_id field at root level
+    $event_id = $event_queue->add_event( 'subscription_confirmation', $operation_id, $confirmation_data );
+    
+    log_graphql_sse( 'info', 'Subscription confirmation queued', [
+        'operation_id' => $operation_id,
+        'token' => substr( $token, 0, 8 ) . '...',
+        'event_id' => $event_id,
+        'confirmation_data_keys' => array_keys( $confirmation_data )
     ]);
 }
 
