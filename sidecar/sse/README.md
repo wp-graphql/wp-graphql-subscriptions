@@ -71,19 +71,25 @@ npm run test:coverage
 
 ## Architecture
 
-The sidecar server acts as a proxy between GraphQL clients and WPGraphQL, adding real-time subscription capabilities:
+The sidecar server acts as an intelligent GraphQL proxy with real-time subscription capabilities:
 
-1. **Schema Introspection**: Automatically discovers WPGraphQL schema
-2. **Request Proxying**: Forwards queries/mutations to WPGraphQL
-3. **Subscription Enhancement**: Adds real-time capabilities to subscription fields
-4. **Event Processing**: Listens to WordPress events via Redis and triggers subscription updates
+### **Operation Routing**
+- **Queries & Mutations**: Proxied directly to WPGraphQL for full WordPress integration
+- **Subscriptions**: Handled by custom Redis pub/sub system with SSE streaming
+- **Schema**: Introspected from WPGraphQL and cached for performance
+
+### **Key Components**
+1. **Schema Introspection**: Automatically discovers and caches WPGraphQL schema
+2. **Intelligent Proxy**: Content-based routing - detects operation type and routes accordingly
+3. **Authentication Passthrough**: Forwards JWT tokens and cookies to WPGraphQL
+4. **Real-time Engine**: Redis pub/sub + SSE for subscription events (Phase 1.4)
 
 ## Current Implementation Status
 
 ✅ **Phase 1.1 Complete**: Basic project setup and configuration  
-🔄 **Phase 1.2 In Progress**: Schema management and introspection  
-⏳ **Phase 1.3 Pending**: Basic proxy functionality  
-⏳ **Phase 1.4 Pending**: Simple subscription support  
+✅ **Phase 1.2 Complete**: Schema management and introspection  
+✅ **Phase 1.3 Complete**: Basic proxy functionality with intelligent operation routing  
+⏳ **Phase 1.4 Pending**: Simple subscription support with Redis pub/sub and SSE  
 
 ## Redis Setup
 
