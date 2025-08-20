@@ -1,6 +1,5 @@
 import { createYoga } from 'graphql-yoga';
 import { createServer } from 'node:http';
-import { buildSchema } from 'graphql';
 import { appConfig } from './config.js';
 import { SchemaIntrospector } from './schema/introspection.js';
 import { ProxyHandler } from './proxy/handler.js';
@@ -20,23 +19,13 @@ class GraphQLYogaServer {
 
     try {
       // Get initial schema from WPGraphQL
+      logger.info(`Attempting to introspect WPGraphQL at: ${appConfig.wpgraphql.endpoint}`);
       const wpSchema = await this.schemaIntrospector.getSchema();
-      logger.info('Initial schema loaded successfully');
+      logger.info('WPGraphQL schema loaded successfully');
 
-      // Create a temporary schema for now - we'll enhance this with subscriptions later
-      const tempSchema = buildSchema(`
-        type Query {
-          hello: String
-        }
-        
-        type Subscription {
-          postUpdated(id: ID): String
-        }
-      `);
-
-      // Create Yoga server
+      // Create Yoga server using the actual WPGraphQL schema
       const yoga = createYoga({
-        schema: tempSchema,
+        schema: wpSchema,
         context: async ({ request }) => {
           // Extract headers for authentication
           const headers: Record<string, string> = {};

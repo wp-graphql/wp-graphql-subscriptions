@@ -11,7 +11,11 @@
     "test": "vitest",
     "test:coverage": "vitest --coverage",
     "lint": "eslint src --ext .ts",
-    "lint:fix": "eslint src --ext .ts --fix"
+    "lint:fix": "eslint src --ext .ts --fix",
+    "redis:start": "docker run --name wpgraphql-redis -p 6379:6379 -d redis:7-alpine || docker start wpgraphql-redis",
+    "redis:stop": "docker stop wpgraphql-redis",
+    "redis:logs": "docker logs -f wpgraphql-redis",
+    "dev:full": "npm run redis:start && npm run dev"
   },
   "keywords": [
     "graphql",

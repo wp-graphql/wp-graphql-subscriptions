@@ -16,7 +16,7 @@ A GraphQL Yoga-based sidecar server that provides real-time subscription capabil
 ### Prerequisites
 
 - Node.js 18+
-- Redis server
+- Redis server (see [Redis Setup](#redis-setup))
 - WordPress with WPGraphQL plugin
 
 ### Installation
@@ -37,7 +37,7 @@ vim .env
 Key environment variables:
 
 ```bash
-WPGRAPHQL_ENDPOINT=http://localhost:8080/graphql
+WPGRAPHQL_ENDPOINT=http://localhost/graphql
 REDIS_URL=redis://localhost:6379
 PORT=4000
 ```
@@ -45,14 +45,18 @@ PORT=4000
 ### Development
 
 ```bash
-# Start in development mode with hot reload
-npm run dev
+# Start Redis + dev server together
+npm run dev:full
 
-# Build for production
-npm run build
+# Or start them separately:
+npm run redis:start  # Start Redis in Docker
+npm run dev          # Start dev server with hot reload
 
-# Start production server
-npm start
+# Other commands:
+npm run build        # Build for production
+npm start           # Start production server
+npm run redis:stop   # Stop Redis container
+npm run redis:logs   # View Redis logs
 ```
 
 ### Testing
@@ -80,6 +84,34 @@ The sidecar server acts as a proxy between GraphQL clients and WPGraphQL, adding
 🔄 **Phase 1.2 In Progress**: Schema management and introspection  
 ⏳ **Phase 1.3 Pending**: Basic proxy functionality  
 ⏳ **Phase 1.4 Pending**: Simple subscription support  
+
+## Redis Setup
+
+### Option 1: Docker (Recommended)
+```bash
+# Start Redis in Docker
+docker run --name wpgraphql-redis -p 6379:6379 -d redis:7-alpine
+
+# Stop when done
+docker stop wpgraphql-redis
+```
+
+### Option 2: Homebrew (macOS)
+```bash
+# Install and start Redis
+brew install redis
+brew services start redis
+```
+
+### Option 3: Direct Installation
+```bash
+# Download and run Redis
+wget http://download.redis.io/redis-stable.tar.gz
+tar xvzf redis-stable.tar.gz
+cd redis-stable
+make
+./src/redis-server
+```
 
 ## Development
 
