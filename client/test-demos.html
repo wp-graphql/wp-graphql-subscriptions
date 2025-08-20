@@ -39,10 +39,9 @@
             color: white;
         }
         .build-demo .demo-description {
-            color: rgba(255, 255, 255, 0.9);
+            color: rgba(255, 255, 255, 1);
         }
         .demo-card {
-            background: #f8f9fa;
             border: 2px solid #e9ecef;
             border-radius: 8px;
             padding: 24px;
@@ -65,6 +64,22 @@
             font-size: 14px;
             color: #6c757d;
             line-height: 1.4;
+        }
+        .demo-card.disabled {
+            background: #f1f3f4;
+            border-color: #dee2e6;
+            cursor: not-allowed;
+        }
+        .demo-card.disabled .demo-title {
+            color: #6c757d;
+        }
+        .demo-card.disabled .demo-description {
+            color: #495057;
+        }
+        .demo-card.disabled:hover {
+            transform: none;
+            box-shadow: none;
+            border-color: #dee2e6;
         }
         .status {
             margin: 24px 0;
@@ -109,7 +124,7 @@
                 </div>
             </div>
 
-            <div class="demo-card" style="opacity: 0.6; cursor: not-allowed;">
+            <div class="demo-card disabled">
                 <div class="demo-title">⚠️ Apollo + React Demo (CDN Issues)</div>
                 <div class="demo-description">
                     This demo has Apollo Client CDN loading issues. 

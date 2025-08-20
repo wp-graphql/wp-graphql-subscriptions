@@ -1,0 +1,52 @@
+{
+  "name": "@wpgraphql/subscriptions-sidecar",
+  "version": "0.1.0",
+  "description": "GraphQL Yoga sidecar server for WPGraphQL subscriptions with SSE support",
+  "main": "dist/server.js",
+  "type": "module",
+  "scripts": {
+    "dev": "tsx watch src/server.ts",
+    "build": "tsc",
+    "start": "node dist/server.js",
+    "test": "vitest",
+    "test:coverage": "vitest --coverage",
+    "lint": "eslint src --ext .ts",
+    "lint:fix": "eslint src --ext .ts --fix"
+  },
+  "keywords": [
+    "graphql",
+    "wordpress",
+    "subscriptions",
+    "sse",
+    "yoga",
+    "redis"
+  ],
+  "author": "WPGraphQL",
+  "license": "MIT",
+  "dependencies": {
+    "@graphql-tools/schema": "^10.0.0",
+    "@graphql-tools/utils": "^10.0.0",
+    "dotenv": "^16.3.1",
+    "graphql": "^16.8.1",
+    "graphql-yoga": "^5.0.0",
+    "jsonwebtoken": "^9.0.2",
+    "node-fetch": "^3.3.2",
+    "pino": "^8.16.1",
+    "redis": "^4.6.10"
+  },
+  "devDependencies": {
+    "@types/jsonwebtoken": "^9.0.4",
+    "@types/node": "^20.8.10",
+    "@typescript-eslint/eslint-plugin": "^6.9.1",
+    "@typescript-eslint/parser": "^6.9.1",
+    "@vitest/coverage-v8": "^0.34.6",
+    "eslint": "^8.52.0",
+    "pino-pretty": "^13.1.1",
+    "tsx": "^4.0.0",
+    "typescript": "^5.2.2",
+    "vitest": "^0.34.6"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}

@@ -76,8 +76,9 @@ export class GraphQLSSEClient {
         throw new Error(`Reservation failed: ${response.status} ${response.statusText}`);
       }
 
-      this.connectionToken = await response.text();
-      this.onDebug('Reservation successful:', this.connectionToken);
+          const result = await response.json();
+    this.connectionToken = result.token;
+    this.onDebug('Reservation successful:', this.connectionToken);
       
       return this.connectionToken;
     } catch (error) {

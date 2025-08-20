@@ -9,6 +9,17 @@ An experimental WordPress plugin that adds GraphQL Subscriptions support to WPGr
 
 This plugin extends WPGraphQL to support GraphQL Subscriptions, allowing clients to receive real-time updates when WordPress content changes. It provides a reference implementation for real-time messaging in WordPress using native WordPress technologies (no external services required).
 
+## 🚀 Quick Demo
+
+Want to see GraphQL subscriptions in action? After installing the plugin:
+
+1. Navigate to `/wp-content/plugins/wp-graphql-subscriptions/client/test-demos.html`
+2. Choose any of the 4 working demos
+3. Follow the on-screen instructions to connect and subscribe  
+4. Update a post in WordPress admin and watch the real-time updates!
+
+**Note**: This requires specific LocalWP configurations for multiple SSE connections. See [Development Setup](#development-setup) below for details.
+
 ## Features
 
 ### Server-Side (WordPress Plugin)
