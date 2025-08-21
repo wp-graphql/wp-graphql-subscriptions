@@ -6,17 +6,18 @@ import logger from '../logger.js';
 
 export interface ActiveSubscription {
   id: string;
-  document: DocumentNode;
+  query: string; // Store raw query string for execution against WPGraphQL
   variables: Record<string, any>;
   operationName: string | undefined;
   context: {
     headers?: Record<string, string>;
-    userId?: string;
+    userId?: string | undefined;
   };
   channel: string;
   subscriptionName: string;
   args: Record<string, any>;
   createdAt: number;
+  sseResponse?: any; // Store SSE response object for streaming
 }
 
 /**
@@ -34,19 +35,20 @@ export class SubscriptionManager {
   }
 
   /**
-   * Creates a new subscription
+   * Creates a new subscription with SSE response for streaming
    */
   async createSubscription(
     subscriptionId: string,
-    document: DocumentNode,
+    query: string,
     variables: Record<string, any>,
     operationName: string | undefined,
-    context: { headers?: Record<string, string>; userId?: string }
+    context: { headers?: Record<string, string>; userId?: string | undefined },
+    sseResponse?: any
   ): Promise<ActiveSubscription> {
     logger.info({ subscriptionId, operationName }, 'Creating new subscription');
 
-    // Extract subscription field and arguments from document
-    const { subscriptionName, args } = this.extractSubscriptionInfo(document, variables);
+    // Extract subscription field and arguments from query string
+    const { subscriptionName, args } = this.extractSubscriptionInfoFromQuery(query, variables);
 
     // Build Redis channel name
     const channel = ChannelBuilder.build(subscriptionName, args);
@@ -54,7 +56,7 @@ export class SubscriptionManager {
     // Create subscription record
     const subscription: ActiveSubscription = {
       id: subscriptionId,
-      document,
+      query,
       variables,
       operationName,
       context,
@@ -62,6 +64,7 @@ export class SubscriptionManager {
       subscriptionName,
       args,
       createdAt: Date.now(),
+      sseResponse,
     };
 
     // Store subscription
@@ -188,68 +191,130 @@ export class SubscriptionManager {
 
     try {
       // Convert document back to query string
-      const query = print(subscription.document);
+      const query = subscription.query;
 
-      // Execute subscription against WPGraphQL with event payload as context
+      // Execute subscription against WPGraphQL with event payload as rootValue
+      // Security: Only pass rootValue for server-to-server communication with proper authentication
       const response = await this.proxyHandler.handleRequest(
         {
           query,
           variables: subscription.variables,
           ...(subscription.operationName ? { operationName: subscription.operationName } : {}),
           extensions: {
-            subscriptionExecution: {
-              eventPayload: event.payload,
-              isSubscription: true,
+            root_value: {
+              ...event.payload,
+              subscription_id: subscription.id, // Include subscription ID in payload for token validation
             },
+            subscription_token: this.generateSubscriptionToken(subscription.id, event.payload),
           },
         },
-        subscription.context
+        {
+          ...(subscription.context.headers ? { headers: subscription.context.headers } : {}),
+          ...(subscription.context.userId ? { userId: subscription.context.userId } : {}),
+        }
       );
 
-      // Handle the response
-      if (response.errors && response.errors.length > 0) {
-        logger.debug(
-          { 
-            subscriptionId: subscription.id,
-            errors: response.errors 
-          },
-          'Subscription execution returned errors'
-        );
-        
-        // For now, we'll emit the error - in a real implementation,
-        // this would be sent to the SSE client
-        this.emitSubscriptionResult(subscription.id, { errors: response.errors });
-        return;
-      }
+      // Stream the response to the subscriber via SSE
+      if (subscription.sseResponse) {
+        try {
+          // Handle errors
+          if (response.errors && response.errors.length > 0) {
+            const errorEvent = {
+              id: subscription.id,
+              type: 'error',
+              payload: { errors: response.errors }
+            };
+            subscription.sseResponse.write(`event: error\ndata: ${JSON.stringify(errorEvent)}\n\n`);
+            logger.debug({ subscriptionId: subscription.id, errors: response.errors }, 'Streamed error response via SSE');
+            return;
+          }
 
-      // Check if subscription returned data
-      if (response.data) {
-        // Check if all subscription fields returned null (filtered out by WPGraphQL)
-        const allNull = Object.values(response.data).every(value => value === null);
-        
-        if (allNull) {
-          logger.debug(
-            { subscriptionId: subscription.id },
-            'Subscription filtered out by WPGraphQL (all fields null)'
-          );
-          return;
+          // Handle data response
+          if (response.data) {
+            // Check if all subscription fields returned null (filtered out by WPGraphQL)
+            const allNull = Object.values(response.data).every(value => value === null);
+            
+            if (allNull) {
+              logger.debug({ subscriptionId: subscription.id }, 'Subscription filtered out by WPGraphQL (all fields null)');
+              return;
+            }
+
+            // Stream successful result
+            const dataEvent = {
+              id: subscription.id,
+              type: 'data',
+              payload: { data: response.data }
+            };
+            subscription.sseResponse.write(`event: data\ndata: ${JSON.stringify(dataEvent)}\n\n`);
+            
+            logger.info({ 
+              subscriptionId: subscription.id, 
+              hasData: !!response.data 
+            }, '📡 SSE: Streamed subscription data to client');
+          }
+        } catch (sseError) {
+          logger.error({ sseError, subscriptionId: subscription.id }, '❌ SSE: Failed to stream response to client');
         }
-
-        // Emit successful result
-        this.emitSubscriptionResult(subscription.id, { data: response.data });
+      } else {
+        logger.warn({ subscriptionId: subscription.id }, '⚠️  SSE: No response object available for streaming');
+        // Fallback to legacy emit method
+        this.emitSubscriptionResult(subscription.id, response);
       }
     } catch (error) {
-      logger.error(
-        { error, subscriptionId: subscription.id },
-        'Subscription execution failed'
-      );
+      logger.error({ error, subscriptionId: subscription.id }, 'Subscription execution failed');
       
-      this.emitSubscriptionResult(subscription.id, {
-        errors: [{
-          message: error instanceof Error ? error.message : 'Unknown subscription error',
-        }],
-      });
+      // Send error to subscriber if possible
+      if (subscription.sseResponse) {
+        try {
+          const errorEvent = {
+            id: subscription.id,
+            type: 'error',
+            payload: {
+              errors: [{ message: error instanceof Error ? error.message : 'Unknown execution error' }]
+            }
+          };
+          subscription.sseResponse.write(`event: error\ndata: ${JSON.stringify(errorEvent)}\n\n`);
+          logger.debug({ subscriptionId: subscription.id }, 'Streamed execution error via SSE');
+        } catch (sseError) {
+          logger.error({ sseError, subscriptionId: subscription.id }, '❌ SSE: Failed to stream error to client');
+        }
+      } else {
+        // Fallback to legacy emit method
+        this.emitSubscriptionResult(subscription.id, {
+          errors: [{ message: error instanceof Error ? error.message : 'Unknown subscription error' }],
+        });
+      }
     }
+  }
+
+  /**
+   * Generates a secure token to authenticate subscription execution with rootValue
+   * This prevents arbitrary clients from injecting rootValue data
+   */
+  private generateSubscriptionToken(subscriptionId: string, payload: any): string {
+    const crypto = require('crypto');
+    
+    // Use a server-side secret (in production, this should be from environment)
+    const secret = process.env.SUBSCRIPTION_SECRET || 'dev-subscription-secret-change-in-production';
+    
+    // Create a hash of the subscription ID + payload + timestamp
+    const timestamp = Math.floor(Date.now() / 1000); // 1-second precision
+    const enhancedPayload = {
+      ...payload,
+      subscription_id: subscriptionId,
+    };
+    const dataToSign = JSON.stringify({
+      subscriptionId,
+      payload: enhancedPayload,
+      timestamp,
+    });
+    
+    const signature = crypto
+      .createHmac('sha256', secret)
+      .update(dataToSign)
+      .digest('hex');
+    
+    return `${timestamp}.${signature}`;
   }
 
   /**
@@ -265,7 +330,46 @@ export class SubscriptionManager {
   }
 
   /**
-   * Extracts subscription name and arguments from GraphQL document
+   * Extract subscription field name and arguments from GraphQL query string
+   */
+  private extractSubscriptionInfoFromQuery(query: string, variables: Record<string, any>): {
+    subscriptionName: string;
+    args: Record<string, any>;
+  } {
+    // Simple regex-based extraction for now - we can improve this with proper AST parsing
+    const subscriptionMatch = query.match(/subscription\s*(?:\w+\s*)?\{\s*(\w+)(?:\s*\(([^)]*)\))?/);
+    
+    if (!subscriptionMatch) {
+      throw new Error('Could not extract subscription field from query');
+    }
+
+    const subscriptionName = subscriptionMatch[1];
+    if (!subscriptionName) {
+      throw new Error('Could not extract subscription name from query');
+    }
+    
+    const argsString = subscriptionMatch[2];
+    
+    // Parse arguments if present
+    let args: Record<string, any> = {};
+    if (argsString) {
+      // Simple argument parsing - extract variable references and resolve them
+      const argMatches = argsString.match(/(\w+):\s*\$(\w+)/g);
+      if (argMatches) {
+        for (const argMatch of argMatches) {
+          const [, argName, varName] = argMatch.match(/(\w+):\s*\$(\w+)/) || [];
+          if (argName && varName && variables[varName] !== undefined) {
+            args[argName] = variables[varName]; // Fixed: use actual variable value
+          }
+        }
+      }
+    }
+
+    return { subscriptionName, args };
+  }
+
+  /**
+   * Extracts subscription name and arguments from GraphQL document (legacy method)
    */
   private extractSubscriptionInfo(
     document: DocumentNode,

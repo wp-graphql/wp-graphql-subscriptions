@@ -40,6 +40,8 @@ export class SchemaIntrospector {
   }
 
   private async introspectSchema(): Promise<GraphQLSchema> {
+    logger.info(`Attempting to introspect WPGraphQL at: ${appConfig.wpgraphql.endpoint}`);
+    
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), appConfig.wpgraphql.timeout);
     
@@ -57,12 +59,25 @@ export class SchemaIntrospector {
     clearTimeout(timeoutId);
 
     if (!response.ok) {
-      throw new Error(`WPGraphQL introspection failed: ${response.status} ${response.statusText}`);
+      const errorText = await response.text().catch(() => 'Could not read error response');
+      logger.error({ 
+        status: response.status, 
+        statusText: response.statusText, 
+        endpoint: appConfig.wpgraphql.endpoint,
+        errorText: errorText.substring(0, 200) 
+      }, 'HTTP error during schema introspection');
+      throw new Error(`WPGraphQL introspection failed: ${response.status} ${response.statusText} - ${errorText.substring(0, 100)}`);
     }
 
-    const result = await response.json() as { data: IntrospectionQuery };
+    const result = await response.json() as { data: IntrospectionQuery; errors?: any[] };
+    
+    if (result.errors) {
+      logger.error({ errors: result.errors, endpoint: appConfig.wpgraphql.endpoint }, 'GraphQL errors during introspection');
+      throw new Error(`GraphQL errors: ${JSON.stringify(result.errors)}`);
+    }
     
     if (!result.data) {
+      logger.error({ result, endpoint: appConfig.wpgraphql.endpoint }, 'No data in introspection response');
       throw new Error('No introspection data received from WPGraphQL');
     }
 

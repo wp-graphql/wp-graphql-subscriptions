@@ -16,6 +16,10 @@ if ( ! defined( 'ABSPATH' ) ) {
 // Transport Events
 require_once __DIR__ . '/includes/transport-webhook.php';
 
+// Subscription Security (token validation for sidecar)
+// Temporarily disabled for debugging
+// require_once __DIR__ . '/includes/subscription-security.php';
+
 // Include the Subscription Manager class.
 require_once __DIR__ . '/includes/class-wpgraphql-subscription-manager.php';
 

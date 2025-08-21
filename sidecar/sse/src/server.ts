@@ -32,6 +32,11 @@ class GraphQLYogaServer {
 
   async start() {
     logger.info('Starting GraphQL Yoga sidecar server...');
+    logger.info({ 
+      wpgraphqlEndpoint: appConfig.wpgraphql.endpoint,
+      redisUrl: appConfig.redis.url,
+      port: appConfig.server.port 
+    }, 'Server configuration');
 
     try {
       // Initialize Redis connection
@@ -44,17 +49,14 @@ class GraphQLYogaServer {
       const wpSchema = await this.schemaIntrospector.getSchema();
       logger.info('WPGraphQL schema loaded successfully');
 
-      // Transform schema to add executable subscription resolvers only
-      // Queries and mutations will be handled by onRequest plugin
-      logger.info('Transforming schema to add executable subscription resolvers...');
-      const transformedSchema = this.schemaTransformer.transform(wpSchema);
-      logger.info('Schema transformation complete');
+      // Use the original WPGraphQL schema for introspection and GraphiQL
+      // Subscriptions will be handled via dedicated SSE endpoint
+      logger.info('Using original WPGraphQL schema for GraphiQL and introspection');
 
-      // Create Yoga server with hybrid approach:
-      // - Transformed schema for subscription execution
-      // - onRequest plugin for query/mutation proxying
+      // Create Yoga server for GraphiQL, introspection, and query/mutation proxying
+      // Subscriptions will bypass Yoga entirely via /graphql/stream endpoint
       const yoga = createYoga({
-        schema: transformedSchema,
+        schema: wpSchema,
         context: async ({ request }) => {
           // Extract headers for authentication
           const headers: Record<string, string> = {};
@@ -72,18 +74,43 @@ class GraphQLYogaServer {
         },
         plugins: [
           {
-            onRequest: async ({ request, fetchAPI, endResponse }) => {
-              // Intercept POST requests that contain GraphQL operations
-              if (request.method === 'POST') {
-                let body;
-                try {
-                  body = await request.json();
-                } catch (error) {
-                  // Not JSON, not a GraphQL request, let it pass through
-                  return;
-                }
+                              onRequest: async ({ request, fetchAPI, endResponse }) => {
+                    // Intercept both GET and POST requests that contain GraphQL operations
+                    let query: string;
+                    let variables: any = {};
+                    let operationName: string | undefined;
 
-                const { query, variables, operationName } = body;
+                    if (request.method === 'POST') {
+                      let body;
+                      try {
+                        body = await request.json();
+                      } catch (error) {
+                        // Not JSON, not a GraphQL request, let it pass through
+                        return;
+                      }
+                      
+                      query = body.query;
+                      variables = body.variables || {};
+                      operationName = body.operationName;
+                    } else if (request.method === 'GET') {
+                      // Handle GraphiQL GET requests
+                      const url = new URL(request.url);
+                      query = url.searchParams.get('query') || '';
+                      
+                      const variablesParam = url.searchParams.get('variables');
+                      if (variablesParam) {
+                        try {
+                          variables = JSON.parse(variablesParam);
+                        } catch (e) {
+                          variables = {};
+                        }
+                      }
+                      
+                      operationName = url.searchParams.get('operationName') || undefined;
+                    } else {
+                      // Not a GraphQL request method, let it pass through
+                      return;
+                    }
 
                 // Check if this is actually a GraphQL request
                 if (!query || typeof query !== 'string') {
@@ -91,12 +118,37 @@ class GraphQLYogaServer {
                   return;
                 }
 
-                // Check if this is a subscription operation
-                if (isSubscriptionOperation(query)) {
-                  // Let subscriptions pass through to our custom handlers (Phase 1.4)
-                  logger.debug('Subscription detected, letting it pass through to custom handlers');
-                  return;
-                }
+                                                                    // Check if this is a subscription operation
+                        if (isSubscriptionOperation(query)) {
+                          // Redirect subscriptions to SSE endpoint
+                          logger.info('Subscription detected, redirecting to SSE endpoint');
+                          endResponse(new fetchAPI.Response(JSON.stringify({
+                            errors: [{
+                              message: 'Subscriptions must use Server-Sent Events. For GraphiQL, use a subscription-capable client or connect directly to /graphql/stream with Accept: text/event-stream header.',
+                              extensions: {
+                                code: 'SUBSCRIPTION_SSE_REQUIRED',
+                                endpoint: '/graphql/stream',
+                                instructions: {
+                                  sse_endpoint: 'POST /graphql/stream',
+                                  headers: {
+                                    'Content-Type': 'application/json',
+                                    'Accept': 'text/event-stream'
+                                  },
+                                  body: {
+                                    query: 'subscription { postUpdated(id: 1) { id title } }',
+                                    variables: {}
+                                  }
+                                }
+                              }
+                            }]
+                          }), {
+                            status: 400,
+                            headers: {
+                              'Content-Type': 'application/json',
+                            },
+                          }));
+                          return;
+                        }
 
                 // Check if this is an introspection query
                 if (query.includes('__schema') || query.includes('__type') || operationName === 'IntrospectionQuery') {
@@ -154,7 +206,6 @@ class GraphQLYogaServer {
                     )
                   );
                 }
-              }
             }
           }
         ],
@@ -169,6 +220,12 @@ class GraphQLYogaServer {
         // Handle WordPress webhook events
         if (req.url === '/webhook/subscription-event' && req.method === 'POST') {
           this.handleWebhookEvent(req, res);
+          return;
+        }
+        
+        // Handle SSE subscription endpoint
+        if (req.url === '/graphql/stream' && req.method === 'POST') {
+          this.handleSSESubscription(req, res);
           return;
         }
         
@@ -197,6 +254,111 @@ class GraphQLYogaServer {
       logger.error({ error }, 'Failed to start server');
       process.exit(1);
     }
+  }
+
+  /**
+   * Handle SSE subscription connections
+   */
+  private async handleSSESubscription(req: any, res: any) {
+    try {
+      // Set SSE headers
+      res.writeHead(200, {
+        'Content-Type': 'text/event-stream',
+        'Cache-Control': 'no-cache',
+        'Connection': 'keep-alive',
+        'Access-Control-Allow-Origin': '*',
+        'Access-Control-Allow-Headers': 'Cache-Control',
+      });
+
+      // Parse subscription request
+      let body = '';
+      req.on('data', (chunk: any) => {
+        body += chunk.toString();
+      });
+
+      req.on('end', async () => {
+        try {
+          const { query, variables, operationName } = JSON.parse(body);
+          
+          if (!isSubscriptionOperation(query)) {
+            res.write(`event: error\ndata: ${JSON.stringify({
+              errors: [{ message: 'Only subscription operations are allowed on this endpoint' }]
+            })}\n\n`);
+            res.end();
+            return;
+          }
+
+          logger.info({ query, variables, operationName }, '🔄 SSE: New subscription connection');
+
+          // Generate unique subscription ID
+          const subscriptionId = `sub_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+          
+          // Store subscription in manager with SSE response for streaming
+          await this.subscriptionManager.createSubscription(
+            subscriptionId,
+            query,
+            variables || {},
+            operationName,
+            {
+              headers: this.extractHeaders(req),
+              ...(this.extractUserId(req) ? { userId: this.extractUserId(req) } : {}),
+            },
+            res // Pass SSE response for streaming
+          );
+
+          // Send confirmation
+          res.write(`event: connection_ack\ndata: ${JSON.stringify({
+            id: subscriptionId,
+            type: 'connection_ack'
+          })}\n\n`);
+
+          // Keep connection alive
+          const keepAlive = setInterval(() => {
+            res.write(`event: ping\ndata: ${JSON.stringify({ type: 'ping' })}\n\n`);
+          }, 30000);
+
+          // Handle connection close
+          req.on('close', async () => {
+            clearInterval(keepAlive);
+            await this.subscriptionManager.removeSubscription(subscriptionId);
+            logger.info({ subscriptionId }, '🔌 SSE: Connection closed');
+          });
+
+        } catch (parseError) {
+          logger.error({ parseError }, '❌ SSE: Failed to parse subscription request');
+          res.write(`event: error\ndata: ${JSON.stringify({
+            errors: [{ message: 'Invalid subscription request' }]
+          })}\n\n`);
+          res.end();
+        }
+      });
+
+    } catch (error) {
+      logger.error({ error }, '❌ SSE: Error handling subscription');
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ errors: [{ message: 'Internal server error' }] }));
+    }
+  }
+
+  /**
+   * Extract headers from request for authentication
+   */
+  private extractHeaders(req: any): Record<string, string> {
+    const headers: Record<string, string> = {};
+    for (const [key, value] of Object.entries(req.headers)) {
+      if (typeof value === 'string') {
+        headers[key.toLowerCase()] = value;
+      }
+    }
+    return headers;
+  }
+
+  /**
+   * Extract user ID from request (if available)
+   */
+  private extractUserId(req: any): string | undefined {
+    // TODO: Extract user ID from JWT token or other auth mechanism
+    return undefined;
   }
 
   /**

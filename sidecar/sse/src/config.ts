@@ -31,7 +31,7 @@ export interface Config {
 
 export const appConfig: Config = {
   wpgraphql: {
-    endpoint: process.env.WPGRAPHQL_ENDPOINT || 'http://localhost:8080/graphql',
+    endpoint: process.env.WPGRAPHQL_ENDPOINT || 'http://localhost/graphql',
     timeout: parseInt(process.env.WPGRAPHQL_TIMEOUT || '10000'),
     retries: parseInt(process.env.WPGRAPHQL_RETRIES || '3'),
   },

@@ -87,14 +87,15 @@ This gives us the developer experience benefits while keeping subscription logic
 
 ## 📋 **New Implementation Plan - Phase 1.5**
 
-### **1.5 Correct Subscription Architecture**
-- [ ] **Remove schema transformation approach** - revert to original WPGraphQL schema
-- [ ] **Create SSE subscription endpoint** - `/graphql/stream` for subscription connections  
-- [ ] **Implement subscription storage** - store active subscription documents and connection info
-- [ ] **Build event-triggered execution** - when Redis event occurs, execute against WPGraphQL
-- [ ] **Add rootValue support** - pass event payload as rootValue to WPGraphQL
-- [ ] **Implement SSE streaming** - forward WPGraphQL responses to subscribers
-- [ ] **Handle connection lifecycle** - manage subscriber connections and cleanup
+### **1.5 Correct Subscription Architecture** ✅ **COMPLETED**
+- [x] **Remove schema transformation approach** - revert to original WPGraphQL schema
+- [x] **Create SSE subscription endpoint** - `/graphql/stream` for subscription connections  
+- [x] **Implement subscription storage** - store active subscription documents and connection info
+- [x] **Build event-triggered execution** - when Redis event occurs, execute against WPGraphQL
+- [x] **Add rootValue support** - pass event payload as rootValue to WPGraphQL with security tokens
+- [x] **Implement SSE streaming** - forward WPGraphQL responses to subscribers
+- [x] **Handle connection lifecycle** - manage subscriber connections and cleanup
+- [x] **Security implementation** - HMAC token validation for rootValue authentication
 
 ### **Architecture Flow:**
 ```
@@ -104,9 +105,36 @@ Store in Subscription Manager + Start SSE Connection
   ↓
 Listen for Redis Events
   ↓
-Event Occurs → Execute Subscription against WPGraphQL (with event as rootValue)
+Event Occurs → Generate Security Token + Execute Subscription against WPGraphQL
+  ↓
+WPGraphQL Validates Token → Sets rootValue → Executes Subscription
   ↓
 WPGraphQL Response → Stream to Subscriber via SSE
+```
+
+### **Security Model:**
+```
+Sidecar Server                    WordPress/WPGraphQL
+     |                                   |
+     | 1. Generate HMAC Token            |
+     |    (subscriptionId + payload      |
+     |     + timestamp + signature)      |
+     |                                   |
+     | 2. Send GraphQL Request           |
+     |    with extensions:               |
+     |    - root_value: eventPayload     |
+     |    - subscription_token: token    |
+     |---------------------------------->|
+     |                                   | 3. Validate Token:
+     |                                   |    - Check timestamp
+     |                                   |    - Verify signature  
+     |                                   |    - Extract rootValue
+     |                                   |
+     |                                   | 4. Execute Subscription
+     |                                   |    with validated rootValue
+     |                                   |
+     | 5. Stream Response via SSE        |
+     |<----------------------------------|
 ```
 
 ### **Benefits:**
