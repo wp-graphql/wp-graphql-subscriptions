@@ -65,10 +65,26 @@ The foundation is complete for implementing:
 
 ---
 
+### Phase 1.4 - Simple Subscription Support 🔄 IN PROGRESS
+- ✅ **Redis Client Integration** - Full pub/sub support with event handling and connection management
+- ✅ **Channel Naming Strategy** - Single-argument constraint with dual-channel publishing (specific + global)
+- ✅ **Subscription Manager** - Lifecycle management, Redis coordination, and subscription tracking
+- ✅ **GraphiQL Compatibility Fix** - Introspection queries handled locally to avoid WPGraphQL spec conflicts
+- ✅ **AST-based Operation Detection** - Robust GraphQL operation type detection using AST parsing
+- ⏳ **SSE Subscription Resolvers** - Async iterable resolvers for real-time streaming (next)
+- ⏳ **WordPress Event Integration** - Connect to existing `graphql_subscription_event` action hook
+- ⏳ **Subscription Execution** - WPGraphQL filtering with event payload context
+
+### Technical Improvements (Phase 1.4)
+- Enhanced operation routing with introspection query detection
+- Robust Redis client with automatic reconnection and error handling
+- Channel builder with serialization support for complex argument types
+- Subscription manager with comprehensive lifecycle tracking
+- AST-based GraphQL parsing for accurate operation type detection
+
 ## Upcoming
 
-### Phase 1.4 - Simple Subscription Support (Next)
-- Redis pub/sub integration
-- SSE connection management
+### Phase 1.4 Completion (Next Steps)
+- SSE subscription resolvers with async iterables
 - WordPress event emission integration
-- Basic subscription field resolvers
+- Real-time subscription execution and filtering

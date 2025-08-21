@@ -27,12 +27,16 @@
 - [x] Implement robust error handling and graceful fallbacks
 - [x] Create GraphQL operation type utilities
 
-### 1.4 Simple Subscription Support
-- [ ] Implement basic Redis pub/sub integration
-- [ ] Create channel naming for simple ID-based subscriptions (align with existing `postUpdated` schema)
-- [ ] Add SSE connection management (GraphQL Yoga default)
+### 1.4 Simple Subscription Support 🔄 IN PROGRESS
+- [x] Implement basic Redis pub/sub integration with event handling
+- [x] Create channel naming strategy for simple ID-based subscriptions (single-argument constraint)
+- [x] Build subscription manager for lifecycle management and Redis coordination
+- [x] Add GraphiQL introspection compatibility (handle locally vs proxy to WPGraphQL)
+- [x] Implement dual-channel publishing strategy (specific + global channels)
+- [ ] Create SSE subscription resolvers with async iterables
 - [ ] Support existing `postUpdated` subscription type with optional `id` argument
 - [ ] Integrate with existing `graphql_subscription_event` action hook
+- [ ] Add subscription execution with WPGraphQL filtering
 
 **Success Criteria**: ✅ **ACHIEVED** - Client can connect, execute queries/mutations via proxy to WPGraphQL, and see subscription schema. Ready for Phase 1.4 to implement SSE events from Redis using existing WordPress event emission system.
 

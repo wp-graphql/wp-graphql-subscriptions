@@ -75,6 +75,14 @@ class GraphQLYogaServer {
                   return;
                 }
 
+                // Check if this is an introspection query
+                if (query.includes('__schema') || query.includes('__type') || operationName === 'IntrospectionQuery') {
+                  // Let introspection queries pass through to Yoga's default handling
+                  // This avoids compatibility issues with WPGraphQL's older GraphQL spec
+                  logger.debug('Introspection query detected, letting Yoga handle it locally');
+                  return;
+                }
+
                 try {
                   logger.debug('Intercepting query/mutation for proxying to WPGraphQL');
 
