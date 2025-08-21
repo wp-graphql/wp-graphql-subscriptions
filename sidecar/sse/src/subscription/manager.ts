@@ -342,4 +342,36 @@ export class SubscriptionManager {
       subscriptionsByChannel,
     };
   }
+
+  /**
+   * Shuts down the subscription manager and cleans up all subscriptions
+   */
+  async shutdown(): Promise<void> {
+    logger.info('Shutting down subscription manager...');
+
+    try {
+      // Get all active subscription IDs
+      const subscriptionIds = Array.from(this.activeSubscriptions.keys());
+      
+      logger.info({ count: subscriptionIds.length }, 'Cleaning up active subscriptions');
+
+      // Remove all subscriptions
+      for (const subscriptionId of subscriptionIds) {
+        try {
+          await this.removeSubscription(subscriptionId);
+        } catch (error) {
+          logger.error({ subscriptionId, error }, 'Error removing subscription during shutdown');
+        }
+      }
+
+      // Clear all maps
+      this.activeSubscriptions.clear();
+      this.subscriptionsByChannel.clear();
+
+      logger.info('Subscription manager shutdown complete');
+    } catch (error) {
+      logger.error({ error }, 'Error during subscription manager shutdown');
+      throw error;
+    }
+  }
 }

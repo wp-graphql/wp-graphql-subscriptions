@@ -5,14 +5,25 @@
 // For now, this is a simple proof of concept that sends all events to a single webhook.
 add_action( 'graphql_subscription_event', function( $event_type, $payload ) {
     
-    wp_remote_post( 
-        'https://webhook.site/ca82a28f-485e-4f53-a716-3dcac8d303ea',
+    // Send to the GraphQL Yoga sidecar server
+    $response = wp_remote_post( 
+        'http://localhost:4000/webhook/subscription-event',
         [
             'headers' => [
                 'Content-Type' => 'application/json',
             ],
             'body' => json_encode( $payload ),
+            'timeout' => 5, // 5 second timeout
         ]
     );
+    
+    // Log the response for debugging
+    if ( is_wp_error( $response ) ) {
+        error_log( 'WPGraphQL Subscriptions: Failed to send webhook - ' . $response->get_error_message() );
+    } else {
+        $response_code = wp_remote_retrieve_response_code( $response );
+        $response_body = wp_remote_retrieve_body( $response );
+        error_log( "WPGraphQL Subscriptions: Webhook sent - HTTP {$response_code}: {$response_body}" );
+    }
     
 }, 10, 2 );

@@ -27,16 +27,93 @@
 - [x] Implement robust error handling and graceful fallbacks
 - [x] Create GraphQL operation type utilities
 
-### 1.4 Simple Subscription Support 🔄 IN PROGRESS
+### 1.4 Simple Subscription Support ⚠️ ARCHITECTURE PIVOT
 - [x] Implement basic Redis pub/sub integration with event handling
 - [x] Create channel naming strategy for simple ID-based subscriptions (single-argument constraint)
 - [x] Build subscription manager for lifecycle management and Redis coordination
 - [x] Add GraphiQL introspection compatibility (handle locally vs proxy to WPGraphQL)
 - [x] Implement dual-channel publishing strategy (specific + global channels)
-- [ ] Create SSE subscription resolvers with async iterables
-- [ ] Support existing `postUpdated` subscription type with optional `id` argument
-- [ ] Integrate with existing `graphql_subscription_event` action hook
-- [ ] Add subscription execution with WPGraphQL filtering
+- [x] ~~Create SSE subscription resolvers with async iterables~~ **WRONG APPROACH**
+- [x] Integrate with existing `graphql_subscription_event` action hook
+- [ ] **NEW APPROACH**: Implement subscription storage and WPGraphQL execution pattern
+
+**🔄 ARCHITECTURE CHANGE**: Instead of executing subscriptions in the sidecar, we need to:
+1. Store subscription documents when clients subscribe
+2. Listen for Redis events
+3. Execute stored subscriptions against WPGraphQL with event as rootValue
+4. Forward WPGraphQL responses to subscribers
+
+This ensures WPGraphQL handles all business logic, auth, and filtering.
+
+## 🏗️ **Architecture Options Analysis**
+
+### **Option A: Keep GraphQL Yoga (Current)**
+**Pros:**
+- ✅ Built-in GraphiQL IDE with subscription support
+- ✅ Schema introspection already working
+- ✅ Familiar GraphQL ecosystem
+- ✅ Easy query/mutation proxying
+
+**Cons:**
+- ❌ Overkill - we're not using it as a GraphQL server
+- ❌ Complex schema transformation for subscriptions
+- ❌ Additional dependency and overhead
+
+### **Option B: Lightweight HTTP + SSE Server**
+**Pros:**
+- ✅ Minimal dependencies (just HTTP server + SSE)
+- ✅ Direct control over subscription handling
+- ✅ Simpler architecture - just event coordination
+- ✅ Better performance (no GraphQL execution overhead)
+
+**Cons:**
+- ❌ No built-in GraphiQL IDE
+- ❌ Need to implement SSE protocol manually
+- ❌ More custom code to maintain
+
+### **Option C: Hybrid Approach**
+**Pros:**
+- ✅ GraphiQL IDE for development/testing
+- ✅ Lightweight subscription handling
+- ✅ Best of both worlds
+
+**Implementation:**
+- Keep Yoga for GraphiQL and query/mutation proxying
+- Add separate SSE endpoint for subscriptions
+- Subscriptions bypass Yoga entirely
+
+### **Recommended: Option C - Hybrid**
+This gives us the developer experience benefits while keeping subscription logic clean and simple.
+
+## 📋 **New Implementation Plan - Phase 1.5**
+
+### **1.5 Correct Subscription Architecture**
+- [ ] **Remove schema transformation approach** - revert to original WPGraphQL schema
+- [ ] **Create SSE subscription endpoint** - `/graphql/stream` for subscription connections  
+- [ ] **Implement subscription storage** - store active subscription documents and connection info
+- [ ] **Build event-triggered execution** - when Redis event occurs, execute against WPGraphQL
+- [ ] **Add rootValue support** - pass event payload as rootValue to WPGraphQL
+- [ ] **Implement SSE streaming** - forward WPGraphQL responses to subscribers
+- [ ] **Handle connection lifecycle** - manage subscriber connections and cleanup
+
+### **Architecture Flow:**
+```
+Client Subscription Request
+  ↓
+Store in Subscription Manager + Start SSE Connection  
+  ↓
+Listen for Redis Events
+  ↓
+Event Occurs → Execute Subscription against WPGraphQL (with event as rootValue)
+  ↓
+WPGraphQL Response → Stream to Subscriber via SSE
+```
+
+### **Benefits:**
+- ✅ **WPGraphQL handles all logic** (auth, filtering, data access)
+- ✅ **Sidecar just coordinates** real-time delivery
+- ✅ **Consistent behavior** with queries/mutations
+- ✅ **Simpler maintenance** - no complex schema transformation
 
 **Success Criteria**: ✅ **ACHIEVED** - Client can connect, execute queries/mutations via proxy to WPGraphQL, and see subscription schema. Ready for Phase 1.4 to implement SSE events from Redis using existing WordPress event emission system.
 

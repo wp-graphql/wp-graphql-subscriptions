@@ -53,6 +53,8 @@ export class RedisClient {
     // Handle subscription messages
     this.subscriber.on('message', (channel: string, message: string) => {
       try {
+        logger.info({ channel, message }, '🎉 REDIS CLIENT: Received Redis message on global handler');
+        
         const payload = JSON.parse(message);
         const event: SubscriptionEvent = {
           channel,
@@ -60,11 +62,24 @@ export class RedisClient {
           timestamp: Date.now(),
         };
 
-        logger.debug({ channel, payload }, 'Received Redis message');
+        logger.info({ channel, payload, handlersAvailable: this.eventHandlers.has(channel) }, '📤 REDIS CLIENT: Processing Redis message');
         this.handleSubscriptionEvent(event);
       } catch (error) {
-        logger.error({ error, channel, message }, 'Failed to parse Redis message');
+        logger.error({ error, channel, message }, '❌ REDIS CLIENT: Failed to parse Redis message');
       }
+    });
+
+    // Add additional event listeners for debugging
+    this.subscriber.on('subscribe', (channel: string, count: number) => {
+      logger.info({ channel, count }, '🔔 REDIS CLIENT: Successfully subscribed to channel');
+    });
+
+    this.subscriber.on('unsubscribe', (channel: string, count: number) => {
+      logger.info({ channel, count }, '🔕 REDIS CLIENT: Unsubscribed from channel');
+    });
+
+    this.subscriber.on('error', (error: any) => {
+      logger.error({ error }, '❌ REDIS CLIENT: Subscriber error');
     });
   }
 
@@ -86,6 +101,9 @@ export class RedisClient {
 
       this.isConnected = true;
       logger.info('Redis connected successfully');
+      
+      // Test the subscriber connection
+      logger.info('🔧 REDIS CLIENT: Testing subscriber connection and message handling');
     } catch (error) {
       logger.error({ error }, 'Failed to connect to Redis');
       throw error;
@@ -123,20 +141,42 @@ export class RedisClient {
       throw new Error('Redis not connected');
     }
 
+    logger.info({ channel, existingChannels: Array.from(this.eventHandlers.keys()) }, '🔧 REDIS CLIENT: Starting subscription process');
+
     // Add handler to our internal map
     if (!this.eventHandlers.has(channel)) {
       this.eventHandlers.set(channel, new Set());
       
-      // Subscribe to the channel in Redis
-      await this.subscriber.subscribe(channel, (message: string) => {
-        // This is handled by the 'message' event listener above
+      // Subscribe to the channel in Redis (Redis v4+ API)
+      logger.info({ channel }, '📡 REDIS CLIENT: Subscribing to Redis channel');
+      await this.subscriber.subscribe(channel, (message: string, channelName: string) => {
+        // Direct callback approach for Redis v4+
+        logger.info({ channel: channelName, message }, '🎉 REDIS CLIENT: Received message via direct callback');
+        
+        try {
+          const payload = JSON.parse(message);
+          const event: SubscriptionEvent = {
+            channel: channelName,
+            payload,
+            timestamp: Date.now(),
+          };
+
+          logger.info({ channel: channelName, payload, handlersAvailable: this.eventHandlers.has(channelName) }, '📤 REDIS CLIENT: Processing message from direct callback');
+          this.handleSubscriptionEvent(event);
+        } catch (error) {
+          logger.error({ error, channel: channelName, message }, '❌ REDIS CLIENT: Failed to parse message from direct callback');
+        }
       });
 
-      logger.debug({ channel }, 'Subscribed to Redis channel');
+      logger.info({ channel }, '✅ REDIS CLIENT: Successfully subscribed to Redis channel');
     }
 
     this.eventHandlers.get(channel)!.add(handler);
-    logger.debug({ channel, handlerCount: this.eventHandlers.get(channel)!.size }, 'Added subscription handler');
+    logger.info({ 
+      channel, 
+      handlerCount: this.eventHandlers.get(channel)!.size,
+      totalChannels: this.eventHandlers.size 
+    }, '✅ REDIS CLIENT: Added subscription handler');
   }
 
   /**

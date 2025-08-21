@@ -76,14 +76,15 @@ The sidecar server acts as an intelligent GraphQL proxy with real-time subscript
 ### **Operation Routing**
 - **Introspection**: Handled locally by Yoga for modern GraphQL tooling compatibility
 - **Queries & Mutations**: Proxied directly to WPGraphQL for full WordPress integration  
-- **Subscriptions**: Handled by custom Redis pub/sub system with SSE streaming
+- **Subscriptions**: Stored locally, executed against WPGraphQL when events occur, streamed via SSE
 - **Schema**: Introspected from WPGraphQL and cached for performance
 
 ### **Key Components**
 1. **Schema Introspection**: Automatically discovers and caches WPGraphQL schema
 2. **Intelligent Proxy**: Content-based routing - detects operation type and routes accordingly
 3. **Authentication Passthrough**: Forwards JWT tokens and cookies to WPGraphQL
-4. **Real-time Engine**: Redis pub/sub + SSE for subscription events (Phase 1.4)
+4. **Subscription Coordinator**: Stores subscriptions, listens for events, executes against WPGraphQL
+5. **Real-time Streaming**: SSE delivery of WPGraphQL responses to subscribers
 
 ## Current Implementation Status
 
