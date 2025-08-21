@@ -2,7 +2,11 @@
  * Configuration management for SSE-2 GraphQL Subscription Server
  */
 
+import { config as loadDotenv } from 'dotenv';
 import type { ServerConfig } from '../types/index.js';
+
+// Load environment variables from .env file
+loadDotenv();
 
 /**
  * Load and validate configuration from environment variables
@@ -22,7 +26,7 @@ export function loadConfig(): ServerConfig {
     redisUrl: process.env.REDIS_URL || 'redis://localhost:6379',
 
     // Security
-    subscriptionSecret: process.env.SUBSCRIPTION_SECRET || 'change-me-in-production',
+    subscriptionSecret: process.env.SUBSCRIPTION_SECRET || 'change-me-in-production-this-is-32-chars-minimum',
 
     // CORS
     corsOrigin: process.env.CORS_ORIGIN?.split(',').map(origin => origin.trim()) || ['http://localhost:3000', 'http://localhost:8080'],

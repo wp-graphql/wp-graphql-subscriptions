@@ -30,12 +30,27 @@ Client → SSE-2 → Redis ← WordPress
 5. **WPGraphQL** returns filtered data
 6. **SSE-2** streams response to client
 
+## Current Status
+
+🚧 **In Development** - Phase 1.2 Complete, Phase 1.3 Next
+
+- ✅ **Phase 1.1**: Project Setup - TypeScript foundation, configuration, logging
+- ✅ **Phase 1.2**: HTTP Server - Content negotiation, GraphiQL IDE, SSE handling  
+- ⏳ **Phase 1.3**: GraphQL Validation - Next up!
+
+**Ready to test:**
+- GraphiQL IDE at `http://localhost:4000/graphql`
+- Content negotiation for different request types
+- Environment configuration via `.env` file
+
+See [docs/PROGRESS.md](docs/PROGRESS.md) for detailed progress tracking.
+
 ## Quick Start
 
 ### Prerequisites
 
 - Node.js 18+
-- Redis server
+- Redis server (optional for Phase 1)
 - WordPress with WPGraphQL plugin
 - WPGraphQL Subscriptions plugin
 
@@ -48,11 +63,18 @@ npm install
 
 ### Configuration
 
-Create `.env` file:
+```bash
+# 1. Copy and configure environment
+cp .env.example .env
+# 2. Edit .env with your settings (especially SUBSCRIPTION_SECRET)
+```
 
+**Example .env:**
 ```bash
 # Server
 PORT=4000
+HOST=localhost
+NODE_ENV=development
 
 # WPGraphQL
 WPGRAPHQL_ENDPOINT=http://localhost/graphql
@@ -60,14 +82,22 @@ WPGRAPHQL_ENDPOINT=http://localhost/graphql
 # Redis
 REDIS_URL=redis://localhost:6379
 
-# Security
-SUBSCRIPTION_SECRET=your-secret-key
+# Security - CHANGE THIS!
+SUBSCRIPTION_SECRET=your-secret-key-here-change-in-production-32-chars-minimum
+
+# Logging
+LOG_LEVEL=info
+LOG_PRETTY=true
 ```
 
 ### Development
 
 ```bash
+# Start development server
 npm run dev
+
+# Visit GraphiQL IDE
+open http://localhost:4000/graphql
 ```
 
 ### Production
@@ -75,6 +105,11 @@ npm run dev
 ```bash
 npm run build
 npm start
+```
+
+**With Redis (for full functionality):**
+```bash
+npm run dev:full  # Starts Redis + dev server
 ```
 
 ## Usage

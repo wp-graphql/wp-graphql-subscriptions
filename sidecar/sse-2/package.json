@@ -27,16 +27,17 @@
   "author": "WPGraphQL Team",
   "license": "GPL-3.0",
   "dependencies": {
-    "pino": "^8.17.2",
-    "redis": "^4.6.12",
+    "dotenv": "^17.2.1",
     "graphql": "^16.8.1",
-    "node-fetch": "^3.3.2"
+    "node-fetch": "^3.3.2",
+    "pino": "^8.17.2",
+    "redis": "^4.6.12"
   },
   "devDependencies": {
     "@types/node": "^20.11.5",
+    "pino-pretty": "^10.3.1",
     "tsx": "^4.7.0",
-    "typescript": "^5.3.3",
-    "pino-pretty": "^10.3.1"
+    "typescript": "^5.3.3"
   },
   "engines": {
     "node": ">=18.0.0"

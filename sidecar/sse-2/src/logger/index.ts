@@ -63,9 +63,9 @@ export function createChildLogger(parentLogger: pino.Logger, context: Record<str
 export interface RequestLogContext {
   method: string;
   url: string;
-  userAgent?: string;
-  contentType?: string;
-  contentLength?: number;
+  userAgent?: string | undefined;
+  contentType?: string | undefined;
+  contentLength?: number | undefined;
   requestId: string;
 }
 
