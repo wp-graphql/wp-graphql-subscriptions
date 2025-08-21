@@ -1,0 +1,44 @@
+{
+  "name": "@wp-graphql/subscriptions-sse-server",
+  "version": "0.1.0",
+  "description": "Minimal GraphQL-SSE subscription server for WPGraphQL real-time subscriptions",
+  "main": "dist/server.js",
+  "type": "module",
+  "scripts": {
+    "dev": "tsx watch src/server.ts",
+    "build": "tsc",
+    "start": "node dist/server.js",
+    "clean": "rm -rf dist",
+    "type-check": "tsc --noEmit",
+    "redis:start": "docker run -d --name wp-graphql-redis -p 6379:6379 redis:7-alpine",
+    "redis:stop": "docker stop wp-graphql-redis && docker rm wp-graphql-redis",
+    "redis:logs": "docker logs -f wp-graphql-redis",
+    "dev:full": "npm run redis:start && sleep 2 && npm run dev"
+  },
+  "keywords": [
+    "graphql",
+    "subscriptions",
+    "server-sent-events",
+    "sse",
+    "wpgraphql",
+    "wordpress",
+    "real-time"
+  ],
+  "author": "WPGraphQL Team",
+  "license": "GPL-3.0",
+  "dependencies": {
+    "pino": "^8.17.2",
+    "redis": "^4.6.12",
+    "graphql": "^16.8.1",
+    "node-fetch": "^3.3.2"
+  },
+  "devDependencies": {
+    "@types/node": "^20.11.5",
+    "tsx": "^4.7.0",
+    "typescript": "^5.3.3",
+    "pino-pretty": "^10.3.1"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}
