@@ -27,51 +27,67 @@ add_action( 'graphql_register_types', function() {
             // Debug logging
             error_log( 'WPGraphQL-SSE: postUpdated resolver called' );
             error_log( 'WPGraphQL-SSE: Args: ' . json_encode( $args ) );
-            error_log( 'WPGraphQL-SSE: Root keys: ' . implode( ', ', array_keys( $root ) ) );
+            error_log( 'WPGraphQL-SSE: Root type: ' . gettype( $root ) );
+            if ( is_array( $root ) ) {
+                error_log( 'WPGraphQL-SSE: Root keys: ' . implode( ', ', array_keys( $root ) ) );
+            } else {
+                error_log( 'WPGraphQL-SSE: Root is not an array, it is: ' . ( is_null( $root ) ? 'null' : gettype( $root ) ) );
+            }
             
             // Get the requested post ID from subscription arguments
             $requested_id = isset( $args['id'] ) ? absint( $args['id'] ) : null;
             error_log( "WPGraphQL-SSE: Requested ID: {$requested_id}" );
             
-            // If we have post data from the subscription event, return it
+            // If we have event data from the subscription, extract the post data
             if ( isset( $root['postUpdated'] ) ) {
-                $post_data = $root['postUpdated'];
-                error_log( 'WPGraphQL-SSE: Found postUpdated in root' );
-                error_log( 'WPGraphQL-SSE: Post data type: ' . ( is_object( $post_data ) ? get_class( $post_data ) : gettype( $post_data ) ) );
+                $event_data = $root['postUpdated'];
+                error_log( 'WPGraphQL-SSE: Found postUpdated event in root' );
+                error_log( 'WPGraphQL-SSE: Event data type: ' . ( is_object( $event_data ) ? get_class( $event_data ) : gettype( $event_data ) ) );
+                error_log( 'WPGraphQL-SSE: Event data keys: ' . ( is_array( $event_data ) ? implode( ', ', array_keys( $event_data ) ) : 'not array' ) );
                 
-                // If we have a WP_Post object directly, check if it matches the requested ID
-                if ( is_object( $post_data ) && isset( $post_data->ID ) ) {
-                    error_log( "WPGraphQL-SSE: WP_Post object found, ID: {$post_data->ID}" );
-                    
-                    // Filter: only return if this post matches the subscribed ID
-                    if ( $requested_id && $post_data->ID != $requested_id ) {
-                        error_log( "WPGraphQL-SSE: Post ID {$post_data->ID} does not match requested ID {$requested_id}, filtering out" );
-                        return null;
-                    }
-                    
-                    error_log( "WPGraphQL-SSE: Post ID matches, returning WPGraphQL Model" );
-                    return new \WPGraphQL\Model\Post( $post_data );
+                // Extract post data from the standardized event format
+                $post_data = null;
+                if ( is_array( $event_data ) && isset( $event_data['post'] ) ) {
+                    // Standard event format: { id, action, timestamp, post: { ... }, post_type }
+                    $post_data = $event_data['post'];
+                    error_log( 'WPGraphQL-SSE: Using post data from event.post' );
+                } elseif ( is_array( $event_data ) && isset( $event_data['ID'] ) ) {
+                    // Direct post data format
+                    $post_data = $event_data;
+                    error_log( 'WPGraphQL-SSE: Using event data directly as post data' );
+                } elseif ( is_object( $event_data ) && isset( $event_data->ID ) ) {
+                    // WP_Post object directly
+                    $post_data = $event_data;
+                    error_log( 'WPGraphQL-SSE: Using WP_Post object directly' );
                 }
                 
-                // If we have a post ID array, load the WP_Post and check ID
-                if ( isset( $post_data['id'] ) ) {
-                    error_log( "WPGraphQL-SSE: Post data array found, ID: {$post_data['id']}" );
-                    $post = get_post( $post_data['id'] );
-                    if ( $post && ! is_wp_error( $post ) ) {
+                if ( $post_data ) {
+                    // Convert array to WP_Post object if needed
+                    if ( is_array( $post_data ) && isset( $post_data['ID'] ) ) {
+                        $post = get_post( $post_data['ID'] );
+                        if ( $post && ! is_wp_error( $post ) ) {
+                            $post_data = $post;
+                        }
+                    }
+                    
+                    // If we have a WP_Post object, check if it matches the requested ID
+                    if ( is_object( $post_data ) && isset( $post_data->ID ) ) {
+                        error_log( "WPGraphQL-SSE: WP_Post object found, ID: {$post_data->ID}" );
+                        
                         // Filter: only return if this post matches the subscribed ID
-                        if ( $requested_id && $post->ID != $requested_id ) {
-                            error_log( "WPGraphQL-SSE: Post ID {$post->ID} does not match requested ID {$requested_id}, filtering out" );
+                        if ( $requested_id && $post_data->ID != $requested_id ) {
+                            error_log( "WPGraphQL-SSE: Post ID {$post_data->ID} does not match requested ID {$requested_id}, filtering out" );
                             return null;
                         }
                         
-                        error_log( "WPGraphQL-SSE: Post ID matches, returning WPGraphQL Model from loaded post" );
-                        return new \WPGraphQL\Model\Post( $post );
+                        error_log( "WPGraphQL-SSE: Post ID matches, returning WPGraphQL Model" );
+                        return new \WPGraphQL\Model\Post( $post_data );
                     }
                 }
                 
-                error_log( 'WPGraphQL-SSE: Post data found but could not process it' );
+                error_log( 'WPGraphQL-SSE: Event data found but could not extract valid post data' );
             } else {
-                error_log( 'WPGraphQL-SSE: No postUpdated data found in root' );
+                error_log( 'WPGraphQL-SSE: No postUpdated event data found in root' );
             }
             
             // For initial subscription setup, return null

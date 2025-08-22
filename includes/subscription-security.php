@@ -6,12 +6,70 @@
  * It validates tokens from the sidecar server before allowing root_value to be set.
  */
 
+
+add_filter( 'graphql_root_value', function( $root_value, $request ) {
+
+    $params = $request->get_params();
+    return $params->extensions['root_value'] ?? $root_value;
+  
+    // wp_send_json( [ 'root_value' => $root_value  ] );
+
+    // // get the extensions from the request
+    // $params = $request->get_params();
+    // error_log( 'graphql_before_execute: ' . json_encode( $params ) );
+
+    // $root_value = $request->root_value = $params->extensions['root_value'] ?? null;
+
+    // wp_send_json( [ 'root_value' => $root_value, '$data' => $request->data ] );
+
+   
+
+
+    return $root_value;
+}, 10, 2 );
+
+return;
+
+// Debug: Log that this file is being loaded
+error_log('WPGraphQL Subscriptions: subscription-security.php file loaded');
+
+// Global variable to store root value between filters
+global $wpgraphql_subscription_root_value;
+$wpgraphql_subscription_root_value = null;
+
+/**
+ * Debug: Log all GraphQL requests to see what we're receiving
+ */
+add_filter('graphql_request_data', function($request_data, $request) {
+    error_log('WPGraphQL Subscriptions: graphql_request_data filter called');
+    error_log('WPGraphQL Subscriptions: Request data keys: ' . implode(', ', array_keys($request_data)));
+    
+    if (isset($request_data['extensions'])) {
+        error_log('WPGraphQL Subscriptions: Extensions found: ' . json_encode($request_data['extensions']));
+    } else {
+        error_log('WPGraphQL Subscriptions: No extensions in request data');
+    }
+    
+    return $request_data;
+}, 5, 2);
+
 /**
  * Validate subscription tokens and set root value for authenticated subscription execution
  */
 add_filter('graphql_request_data', function($request_data, $request) {
     // Only process if extensions contain subscription data
-    if (!isset($request_data['extensions']['root_value']) || !isset($request_data['extensions']['subscription_token'])) {
+    if (!isset($request_data['extensions']['root_value'])) {
+        return $request_data;
+    }
+    
+    // For development: Skip token validation if no token provided
+    if (!isset($request_data['extensions']['subscription_token'])) {
+        error_log('WPGraphQL Subscriptions: Processing subscription without token (development mode)');
+        // Store the root value in global variable for the graphql_root_value filter
+        global $wpgraphql_subscription_root_value;
+        $wpgraphql_subscription_root_value = $request_data['extensions']['root_value'];
+        error_log('WPGraphQL Subscriptions: Stored root value in global variable');
+        error_log('WPGraphQL Subscriptions: rootValue type: ' . gettype($wpgraphql_subscription_root_value));
         return $request_data;
     }
 
@@ -31,10 +89,51 @@ add_filter('graphql_request_data', function($request_data, $request) {
     }
 
     // Token is valid - we can safely set the root value
-    // The root_value will be picked up by the graphql_root_value filter below
+    // Set the root value in the main request data where WPGraphQL expects it
+    $request_data['rootValue'] = $root_value;
+    error_log('WPGraphQL Subscriptions: Set rootValue in request_data (authenticated): ' . json_encode(array_keys($request_data)));
+    error_log('WPGraphQL Subscriptions: rootValue type (authenticated): ' . gettype($request_data['rootValue']));
     
     return $request_data;
 }, 10, 2);
+
+/**
+ * Intercept GraphQL execution to set root value
+ */
+add_filter('graphql_execute', function($result, $schema, $source, $root_value, $context_value, $variable_values, $operation_name, $field_resolver, $validation_rules, $query_complexity_max) {
+    error_log('WPGraphQL Subscriptions: graphql_execute filter called');
+    error_log('WPGraphQL Subscriptions: Operation name: ' . ($operation_name ?: 'none'));
+    error_log('WPGraphQL Subscriptions: Result type: ' . gettype($result));
+    
+    // Check if this is a subscription and we have root_value in the request
+    if ($context_value && method_exists($context_value, 'request')) {
+        $request = $context_value->request;
+        if ($request) {
+            $request_data = $request->get_params();
+            error_log('WPGraphQL Subscriptions: Request data keys: ' . implode(', ', array_keys($request_data)));
+            
+            if (isset($request_data['extensions']['root_value'])) {
+                error_log('WPGraphQL Subscriptions: Found root_value in extensions, executing with custom root');
+                $custom_root_value = $request_data['extensions']['root_value'];
+                
+                // Execute GraphQL with our custom root value
+                return \GraphQL\GraphQL::executeQuery(
+                    $schema,
+                    $source,
+                    $custom_root_value, // Use our root value
+                    $context_value,
+                    $variable_values,
+                    $operation_name,
+                    $field_resolver,
+                    $validation_rules
+                );
+            }
+        }
+    }
+    
+    // Return null to continue with normal execution
+    return null;
+}, 10, 10);
 
 /**
  * Set the validated root value for subscription execution
@@ -43,18 +142,26 @@ add_filter('graphql_root_value', function($root_value, $request) {
     // Check if we have validated root_value from extensions
     $request_data = $request->get_params();
     
+    error_log('WPGraphQL Subscriptions: graphql_root_value filter called');
+    error_log('WPGraphQL Subscriptions: Original root_value type: ' . gettype($root_value));
+    error_log('WPGraphQL Subscriptions: Has extensions: ' . (isset($request_data['extensions']) ? 'yes' : 'no'));
+    error_log('WPGraphQL Subscriptions: Has root_value in extensions: ' . (isset($request_data['extensions']['root_value']) ? 'yes' : 'no'));
+    
     if (isset($request_data['extensions']['root_value'])) {
         // This root_value has already been validated by the token check above
         $validated_root_value = $request_data['extensions']['root_value'];
         
         // Log successful subscription execution
         error_log('WPGraphQL Subscriptions: Executing subscription with validated root value');
+        error_log('WPGraphQL Subscriptions: Root value type: ' . gettype($validated_root_value));
+        error_log('WPGraphQL Subscriptions: Root value keys: ' . (is_array($validated_root_value) ? implode(', ', array_keys($validated_root_value)) : 'not an array'));
         
         return $validated_root_value;
     }
     
+    error_log('WPGraphQL Subscriptions: No root_value found in extensions, returning original');
     return $root_value;
-}, 10, 2);
+}, 20, 2);
 
 /**
  * Validate subscription token using HMAC signature

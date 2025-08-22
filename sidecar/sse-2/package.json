@@ -13,7 +13,12 @@
     "redis:start": "docker run -d --name wp-graphql-redis -p 6379:6379 redis:7-alpine",
     "redis:stop": "docker stop wp-graphql-redis && docker rm wp-graphql-redis",
     "redis:logs": "docker logs -f wp-graphql-redis",
-    "dev:full": "npm run redis:start && sleep 2 && npm run dev"
+    "dev:full": "npm run redis:start && sleep 2 && npm run dev",
+    "kill": "lsof -ti:4000 | xargs -r kill -9 && pkill -f tsx || true",
+    "kill:all": "npm run kill && npm run redis:stop || true",
+    "restart": "npm run kill && sleep 2 && npm run dev",
+    "restart:full": "npm run kill:all && sleep 2 && npm run dev:full",
+    "status": "echo '=== Port 4000 ===' && lsof -ti:4000 && echo '=== TSX Processes ===' && ps aux | grep tsx | grep -v grep && echo '=== Redis Container ===' && docker ps | grep wp-graphql-redis || echo 'No processes found'"
   },
   "keywords": [
     "graphql",

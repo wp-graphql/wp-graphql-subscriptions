@@ -23,7 +23,10 @@ export function loadConfig(): ServerConfig {
     wpgraphqlIntrospectionEndpoint: process.env.WPGRAPHQL_INTROSPECTION_ENDPOINT || process.env.WPGRAPHQL_ENDPOINT || 'http://localhost/graphql',
 
     // Redis Configuration
-    redisUrl: process.env.REDIS_URL || 'redis://localhost:6379',
+    redis: {
+      url: process.env.REDIS_URL || 'redis://localhost:6379',
+      keyPrefix: process.env.REDIS_KEY_PREFIX || 'wpgraphql:',
+    },
 
     // Security
     subscriptionSecret: process.env.SUBSCRIPTION_SECRET || 'change-me-in-production-this-is-32-chars-minimum',
@@ -72,7 +75,7 @@ function validateConfig(config: ServerConfig): void {
   }
 
   try {
-    new URL(config.redisUrl);
+    new URL(config.redis.url);
   } catch {
     errors.push('REDIS_URL must be a valid URL');
   }

@@ -27,7 +27,7 @@ export interface Response extends ServerResponse {
 export interface GraphQLRequest {
   query: string;
   variables?: Record<string, any>;
-  operationName?: string;
+  operationName?: string | undefined;
   extensions?: Record<string, any>;
 }
 
@@ -105,7 +105,6 @@ export interface ServerConfig {
   host: string;
   wpgraphqlEndpoint: string;
   wpgraphqlIntrospectionEndpoint: string;
-  redisUrl: string;
   subscriptionSecret: string;
   corsOrigin: string[];
   requestTimeout: number;
@@ -114,6 +113,10 @@ export interface ServerConfig {
   logLevel: string;
   logPretty: boolean;
   nodeEnv: string;
+  redis: {
+    url: string;
+    keyPrefix: string;
+  };
 }
 
 /**
@@ -164,4 +167,20 @@ export interface RootValuePayload {
   subscriptionId: string;
   eventData: any;
   timestamp: number;
+}
+
+/**
+ * WordPress Event types
+ */
+export interface WordPressEvent {
+  node_type: string;
+  action: string;
+  node_id: number;
+  context: Record<string, any>;
+  metadata: {
+    timestamp: number;
+    event_id: string;
+    user_id?: number;
+    hook?: string;
+  };
 }

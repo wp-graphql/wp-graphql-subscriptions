@@ -8,16 +8,24 @@ import { parse as parseUrl } from 'node:url';
 import type { Logger } from 'pino';
 import type { ServerConfig, ContentNegotiation, GraphQLRequest } from '../types/index.js';
 import { generateRequestId, createRequestLogger } from '../logger/index.js';
+import { RedisClient } from '../redis/client.js';
+import { SubscriptionManager } from '../subscription/manager.js';
 
 export class HTTPServer {
   private server: ReturnType<typeof createServer>;
   private logger: Logger;
   private config: ServerConfig;
+  private redisClient: RedisClient;
+  private subscriptionManager: SubscriptionManager;
 
   constructor(config: ServerConfig, logger: Logger) {
     this.config = config;
     this.logger = logger;
     this.server = createServer(this.handleRequest.bind(this));
+    
+    // Initialize Redis client and subscription manager
+    this.redisClient = new RedisClient(config, logger);
+    this.subscriptionManager = new SubscriptionManager(this.redisClient, config, logger);
     
     // Server event handlers
     this.server.on('listening', () => {
@@ -40,6 +48,9 @@ export class HTTPServer {
    * Start the HTTP server
    */
   async start(): Promise<void> {
+    // Connect to Redis first
+    await this.redisClient.connect();
+    
     return new Promise((resolve, reject) => {
       this.server.listen(this.config.port, this.config.host, (error?: Error) => {
         if (error) {
@@ -55,6 +66,10 @@ export class HTTPServer {
    * Stop the HTTP server
    */
   async stop(): Promise<void> {
+    // Clean up subscriptions and disconnect from Redis
+    await this.subscriptionManager.cleanup();
+    await this.redisClient.disconnect();
+    
     return new Promise((resolve) => {
       this.server.close(() => {
         resolve();
@@ -93,28 +108,19 @@ export class HTTPServer {
       // Parse URL
       const parsedUrl = parseUrl(req.url || '/', true);
       
-      // Only handle /graphql endpoint
-      if (parsedUrl.pathname !== '/graphql') {
-        this.sendNotFound(res, requestLogger);
-        return;
-      }
-
       // Determine content negotiation
       const negotiation = this.determineContentNegotiation(req);
       
-      // Route based on content negotiation
-      if (negotiation.method === 'GET' && negotiation.acceptsHtml) {
-        // Serve GraphiQL IDE
-        await this.handleGraphiQL(req, res, requestLogger);
-      } else if (negotiation.method === 'POST' && negotiation.acceptsJson) {
-        // Handle introspection queries
-        await this.handleIntrospection(req, res, requestLogger);
-      } else if (negotiation.method === 'POST' && negotiation.acceptsEventStream) {
-        // Handle SSE subscriptions
-        await this.handleSSESubscription(req, res, requestLogger);
+      // Route to appropriate handler
+      if (parsedUrl.pathname === '/graphql') {
+        // Handle GraphQL endpoint
+        await this.handleGraphQLEndpoint(req, res, requestLogger, parsedUrl, negotiation);
+      } else if (parsedUrl.pathname === '/webhook' && req.method === 'POST') {
+        // Handle WordPress webhook events
+        await this.handleWebhookEvent(req, res, requestLogger);
       } else {
-        // Unsupported request
-        this.sendMethodNotAllowed(res, requestLogger, negotiation);
+        this.sendNotFound(res, requestLogger);
+        return;
       }
 
     } catch (error) {
@@ -179,23 +185,121 @@ export class HTTPServer {
       const body = await this.parseRequestBody(req);
       const graphqlRequest: GraphQLRequest = JSON.parse(body);
       
-      // TODO: Implement introspection proxy to WPGraphQL
-      logger.debug({ query: graphqlRequest.query }, 'Introspection query received');
+      // Forward headers for authentication
+      const forwardHeaders: Record<string, string> = {};
+      if (req.headers.authorization) {
+        forwardHeaders.authorization = req.headers.authorization;
+      }
+      if (req.headers.cookie) {
+        forwardHeaders.cookie = req.headers.cookie;
+      }
       
-      // Placeholder response
-      const response = {
-        data: null,
-        errors: [{
-          message: 'Introspection not yet implemented',
-          extensions: { code: 'NOT_IMPLEMENTED' }
-        }]
-      };
-      
-      this.sendJSON(res, response);
+      // Use the extracted introspection logic
+      await this.handleIntrospectionQuery(graphqlRequest, res, logger, forwardHeaders);
       
     } catch (error) {
       logger.error({ error }, 'Introspection error');
       this.sendGraphQLError(res, 'Failed to process introspection request');
+    }
+  }
+
+  /**
+   * Handle SSE subscription requests from query parameters (GET + text/event-stream)
+   */
+  private async handleSSESubscriptionFromQuery(req: IncomingMessage, res: ServerResponse, logger: Logger, parsedUrl: any): Promise<void> {
+    logger.info('Handling SSE subscription request from query parameters');
+    
+    try {
+      // Extract GraphQL request from query parameters
+      const query = parsedUrl.query?.query;
+      const variables = parsedUrl.query?.variables ? JSON.parse(parsedUrl.query.variables) : undefined;
+      const operationName = parsedUrl.query?.operationName;
+      
+      if (!query) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({
+          errors: [{
+            message: 'Missing query parameter',
+            extensions: { code: 'MISSING_QUERY' }
+          }]
+        }));
+        return;
+      }
+      
+      const graphqlRequest = { query, variables, operationName };
+      await this.processSSESubscription(graphqlRequest, res, logger);
+      
+    } catch (error) {
+      logger.error({ error }, 'SSE subscription from query error');
+      
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({
+        errors: [{
+          message: 'Failed to process subscription request',
+          extensions: { code: 'INTERNAL_ERROR' }
+        }]
+      }));
+    }
+  }
+
+  /**
+   * Handle SSE subscriptions with pre-parsed body
+   */
+  private async handleSSESubscriptionWithBody(body: string, res: ServerResponse, logger: Logger): Promise<void> {
+    try {
+      const graphqlRequest: GraphQLRequest = JSON.parse(body);
+      await this.processSSESubscription(graphqlRequest, res, logger);
+    } catch (error) {
+      logger.error({ error }, 'Failed to parse GraphQL request for SSE subscription');
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({
+        errors: [{
+          message: 'Invalid GraphQL request',
+          extensions: { code: 'INVALID_REQUEST' }
+        }]
+      }));
+    }
+  }
+
+  /**
+   * Handle introspection query with GraphQL request object
+   */
+  private async handleIntrospectionQuery(graphqlRequest: GraphQLRequest, res: ServerResponse, logger: Logger, forwardHeaders: Record<string, string>): Promise<void> {
+    try {
+      logger.debug({ query: graphqlRequest.query?.substring(0, 100) + '...' }, 'Proxying request to WPGraphQL');
+      
+      // Proxy to WPGraphQL
+      const { WPGraphQLClient } = await import('../graphql/client.js');
+      const client = new WPGraphQLClient(this.config, logger);
+      const response = await client.executeRequest(graphqlRequest, forwardHeaders);
+      
+      this.sendJSON(res, response);
+    } catch (error) {
+      logger.error({ error }, 'Introspection query error');
+      this.sendGraphQLError(res, 'Failed to process introspection request');
+    }
+  }
+
+  /**
+   * Handle introspection queries with pre-parsed body
+   */
+  private async handleIntrospectionWithBody(body: string, res: ServerResponse, logger: Logger): Promise<void> {
+    try {
+      const graphqlRequest: GraphQLRequest = JSON.parse(body);
+      // Process as regular GraphQL query (not SSE) - delegate to existing introspection handler
+      logger.info('Handling introspection request with pre-parsed body');
+      
+      // Use the extracted introspection logic
+      await this.handleIntrospectionQuery(graphqlRequest, res, logger, {});
+    } catch (error) {
+      logger.error({ error }, 'Failed to parse GraphQL request for introspection');
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({
+        errors: [{
+          message: 'Invalid GraphQL request',
+          extensions: { code: 'INVALID_REQUEST' }
+        }]
+      }));
     }
   }
 
@@ -210,37 +314,123 @@ export class HTTPServer {
       const body = await this.parseRequestBody(req);
       const graphqlRequest: GraphQLRequest = JSON.parse(body);
       
-      // TODO: Implement subscription validation and SSE streaming
-      logger.debug({ query: graphqlRequest.query }, 'Subscription query received');
-      
-      // Set up SSE headers
-      res.writeHead(200, {
-        'Content-Type': 'text/event-stream',
-        'Cache-Control': 'no-cache',
-        'Connection': 'keep-alive',
-        'X-Accel-Buffering': 'no', // Disable Nginx buffering
-      });
-      
-      // Send connection acknowledgment
-      res.write('event: connection_ack\n');
-      res.write('data: {"type":"connection_ack"}\n\n');
-      
-      // TODO: Implement subscription lifecycle
-      // For now, just keep connection alive
-      const keepAlive = setInterval(() => {
-        res.write('event: ping\n');
-        res.write('data: {"type":"ping"}\n\n');
-      }, 30000);
-      
-      // Handle client disconnect
-      req.on('close', () => {
-        logger.info('SSE connection closed');
-        clearInterval(keepAlive);
-      });
+      await this.processSSESubscription(graphqlRequest, res, logger);
       
     } catch (error) {
       logger.error({ error }, 'SSE subscription error');
-      this.sendGraphQLError(res, 'Failed to process subscription request');
+      
+      // Send error response
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({
+        errors: [{
+          message: 'Failed to process subscription request',
+          extensions: { code: 'INTERNAL_ERROR' }
+        }]
+      }));
+    }
+  }
+
+  /**
+   * Process SSE subscription (shared logic for GET and POST)
+   */
+  private async processSSESubscription(graphqlRequest: GraphQLRequest, res: ServerResponse, logger: Logger): Promise<void> {
+    // Parse and validate GraphQL document
+    const { GraphQLParser } = await import('../graphql/parser.js');
+    const parser = new GraphQLParser(logger);
+    
+    try {
+      const parsedOperation = parser.parseDocument(graphqlRequest.query);
+      parser.validateSubscription(parsedOperation);
+      
+      logger.debug({ 
+        operationType: parsedOperation.operationType,
+        operationName: parsedOperation.operationName,
+      }, 'Valid subscription received');
+      
+    } catch (parseError) {
+      logger.warn({ error: parseError }, 'Invalid subscription request');
+      
+      // Send error as JSON for invalid subscriptions
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({
+        errors: [{
+          message: parseError instanceof Error ? parseError.message : 'Invalid subscription',
+          extensions: { code: 'INVALID_SUBSCRIPTION' }
+        }]
+      }));
+      return;
+    }
+    
+    // Set up SSE headers
+    res.writeHead(200, {
+      'Content-Type': 'text/event-stream',
+      'Cache-Control': 'no-cache',
+      'Connection': 'keep-alive',
+      'X-Accel-Buffering': 'no', // Disable Nginx buffering
+    });
+    
+    // Send connection acknowledgment following GraphQL-SSE protocol
+    res.write('event: next\n');
+    res.write('data: {"data":{"message":"Subscription established - waiting for events..."}}\n\n');
+    
+    // Generate unique subscription ID
+    const subscriptionId = `sub_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+    
+    try {
+      // Create subscription with the manager
+      await this.subscriptionManager.createSubscription(
+        subscriptionId,
+        graphqlRequest,
+        res
+      );
+      
+      logger.info({ subscriptionId }, 'Subscription created successfully');
+      
+    } catch (subscriptionError) {
+      logger.error({ subscriptionError, subscriptionId }, 'Failed to create subscription');
+      
+      // Send error and complete
+      res.write('event: next\n');
+      res.write(`data: {"errors":[{"message":"Failed to create subscription: ${subscriptionError instanceof Error ? subscriptionError.message : 'Unknown error'}"}]}\n\n`);
+      res.write('event: complete\n');
+      res.write('data: \n\n');
+      res.end();
+      return;
+    }
+    
+    // Handle client disconnect
+    res.on('close', () => {
+      logger.info({ subscriptionId }, 'SSE connection closed by client');
+      this.subscriptionManager.removeSubscription(subscriptionId);
+    });
+    
+    res.on('error', (error) => {
+      logger.error({ error, subscriptionId }, 'SSE connection error');
+      this.subscriptionManager.removeSubscription(subscriptionId);
+    });
+  }
+
+  /**
+   * Check if a request contains a subscription operation
+   */
+  private async isSubscriptionRequest(body: string, logger: Logger): Promise<boolean> {
+    try {
+      const data = JSON.parse(body);
+      const query = data.query || '';
+      
+      // More precise check for subscription operation
+      const trimmedQuery = query.trim().toLowerCase();
+      
+      // Check if it starts with 'subscription' keyword (ignoring whitespace and comments)
+      const cleanQuery = trimmedQuery.replace(/^\s*#.*$/gm, '').trim();
+      const isSubscription = /^\s*subscription\s+/i.test(cleanQuery);
+      
+      logger.debug({ isSubscription, queryStart: cleanQuery.substring(0, 50) }, 'Subscription detection');
+      
+      return isSubscription;
+    } catch (error) {
+      logger.debug({ error }, 'Failed to parse request body for subscription check');
+      return false;
     }
   }
 
@@ -285,36 +475,83 @@ export class HTTPServer {
       return async function fetcher(graphQLParams, opts) {
         const { query, variables, operationName } = graphQLParams;
         
-        // Check if this is a subscription
-        const isSubscription = query.trim().toLowerCase().startsWith('subscription');
+        // Parse the query to determine operation type
+        let operationType = 'query'; // default
+        try {
+          // Simple regex to detect operation type
+          const trimmed = query.trim();
+          const match = trimmed.match(/^\\s*(query|mutation|subscription)\\s/i);
+          if (match) {
+            operationType = match[1].toLowerCase();
+          }
+        } catch (e) {
+          // If parsing fails, assume it's a query
+        }
         
-        if (isSubscription) {
+        if (operationType === 'subscription') {
           // Handle subscription via SSE
           return new Promise((resolve, reject) => {
-            const eventSource = new EventSource('/graphql', {
+            let hasResolved = false;
+            
+            fetch('/graphql', {
               method: 'POST',
               headers: {
                 'Content-Type': 'application/json',
                 'Accept': 'text/event-stream',
               },
               body: JSON.stringify({ query, variables, operationName }),
-            });
-            
-            eventSource.onmessage = function(event) {
-              try {
-                const data = JSON.parse(event.data);
-                resolve(data);
-              } catch (e) {
-                reject(e);
+            }).then(response => {
+              if (!response.ok) {
+                throw new Error(\`HTTP \${response.status}: \${response.statusText}\`);
               }
-            };
+              
+              const reader = response.body.getReader();
+              const decoder = new TextDecoder();
+              
+              function readStream() {
+                reader.read().then(({ done, value }) => {
+                  if (done) {
+                    if (!hasResolved) {
+                      resolve({ data: null });
+                    }
+                    return;
+                  }
+                  
+                  const text = decoder.decode(value, { stream: true });
+                  const lines = text.split('\\n');
+                  
+                  for (const line of lines) {
+                    if (line.startsWith('data: ') && line.length > 6) {
+                      try {
+                        const data = JSON.parse(line.substring(6));
+                        if (!hasResolved) {
+                          hasResolved = true;
+                          resolve(data);
+                        }
+                        return;
+                      } catch (e) {
+                        // Ignore parsing errors for individual lines
+                      }
+                    }
+                  }
+                  
+                  readStream(); // Continue reading
+                }).catch(reject);
+              }
+              
+              readStream();
+            }).catch(reject);
             
-            eventSource.onerror = function(error) {
-              reject(error);
-            };
+            // Timeout after 10 seconds
+            setTimeout(() => {
+              if (!hasResolved) {
+                hasResolved = true;
+                reject(new Error('Subscription timeout'));
+              }
+            }, 10000);
           });
         } else {
-          // Handle queries and mutations via regular fetch
+          // Handle queries and mutations via regular fetch to WPGraphQL
           const response = await fetch('/graphql', {
             method: 'POST',
             headers: {
@@ -323,6 +560,10 @@ export class HTTPServer {
             },
             body: JSON.stringify({ query, variables, operationName }),
           });
+          
+          if (!response.ok) {
+            throw new Error(\`HTTP \${response.status}: \${response.statusText}\`);
+          }
           
           return await response.json();
         }
@@ -408,7 +649,7 @@ subscription PostUpdated($id: ID!) {
     });
     res.end(JSON.stringify({
       error: 'Method Not Allowed',
-      message: 'This endpoint supports: GET (GraphiQL), POST + application/json (introspection), POST + text/event-stream (subscriptions)',
+      message: 'This endpoint supports: GET (GraphiQL or SSE subscriptions), POST + application/json (introspection), POST + text/event-stream (subscriptions)',
       received: negotiation,
     }));
   }
@@ -422,5 +663,172 @@ subscription PostUpdated($id: ID!) {
       error: 'Internal Server Error',
       message: error instanceof Error ? error.message : 'Unknown error',
     }));
+  }
+
+  /**
+   * Handle GraphQL endpoint with content negotiation
+   */
+  private async handleGraphQLEndpoint(
+    req: IncomingMessage, 
+    res: ServerResponse, 
+    logger: Logger, 
+    parsedUrl: any, 
+    negotiation: ContentNegotiation
+  ): Promise<void> {
+    // Route based on content negotiation
+    if (negotiation.method === 'GET' && negotiation.acceptsHtml) {
+      // Serve GraphiQL IDE
+      await this.handleGraphiQL(req, res, logger);
+    } else if (negotiation.method === 'GET' && negotiation.acceptsEventStream) {
+      // Handle SSE subscriptions via GET (from GraphiQL)
+      await this.handleSSESubscriptionFromQuery(req, res, logger, parsedUrl);
+    } else if (negotiation.method === 'POST' && negotiation.acceptsEventStream) {
+      // Handle SSE subscriptions via POST
+      await this.handleSSESubscription(req, res, logger);
+    } else if (negotiation.method === 'POST' && negotiation.acceptsJson) {
+      // Check if this is a subscription operation first
+      const body = await this.parseRequestBody(req);
+      const isSubscription = await this.isSubscriptionRequest(body, logger);
+      
+      if (isSubscription) {
+        // Handle SSE subscriptions via POST (recreate request with body)
+        await this.handleSSESubscriptionWithBody(body, res, logger);
+      } else {
+        // Handle introspection queries (recreate request with body)
+        await this.handleIntrospectionWithBody(body, res, logger);
+      }
+    } else {
+      // Unsupported request
+      this.sendMethodNotAllowed(res, logger, negotiation);
+    }
+  }
+
+  /**
+   * Handle WordPress webhook events
+   */
+  private async handleWebhookEvent(req: IncomingMessage, res: ServerResponse, logger: Logger): Promise<void> {
+    logger.info('Handling WordPress webhook event');
+    
+    try {
+      // Parse request body
+      const body = await this.parseRequestBody(req);
+      const eventData = JSON.parse(body);
+      
+      logger.info({ eventData }, 'Received WordPress event');
+
+      // TODO: Validate webhook signature for security
+      
+      // Extract event information
+      const { node_type, action, node_id, context, metadata } = eventData;
+      
+      if (!node_type || !action || !node_id) {
+        logger.warn({ eventData }, 'Invalid webhook event - missing required fields');
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ 
+          error: 'Invalid event format',
+          message: 'Missing required fields: node_type, action, node_id'
+        }));
+        return;
+      }
+
+      // Map WordPress event to subscription type
+      const subscriptionType = this.mapWordPressEventToSubscription(node_type, action);
+      if (!subscriptionType) {
+        logger.warn({ node_type, action }, 'Unknown subscription type for WordPress event');
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ 
+          status: 'ignored', 
+          reason: 'unknown_subscription_type' 
+        }));
+        return;
+      }
+
+      // Get Redis client (we'll need to initialize this in the constructor)
+      if (!this.redisClient) {
+        logger.error('Redis client not initialized');
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ 
+          error: 'Redis not available',
+          message: 'Redis client not initialized'
+        }));
+        return;
+      }
+
+      // Build Redis channels (both specific and global)
+      const { ChannelBuilder } = await import('../subscription/channels.js');
+      const channels = ChannelBuilder.buildMultiple(subscriptionType, { id: node_id });
+      
+      logger.info({ subscriptionType, node_id, channels }, 'Publishing to Redis channels');
+      
+      // Create event payload for subscribers
+      const subscriptionPayload = {
+        id: String(node_id),
+        action,
+        timestamp: metadata?.timestamp || Date.now(),
+        ...context
+      };
+
+      // Publish to all relevant channels
+      let publishCount = 0;
+      for (const channel of channels) {
+        try {
+          await this.redisClient.publish(channel, subscriptionPayload);
+          publishCount++;
+          logger.debug({ channel, payload: subscriptionPayload }, 'Published to Redis channel');
+        } catch (error) {
+          logger.error({ error, channel }, 'Failed to publish to Redis channel');
+        }
+      }
+
+      // Send success response
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({
+        status: 'success',
+        subscription_type: subscriptionType,
+        channels_published: publishCount,
+        total_channels: channels.length,
+      }));
+
+      logger.info({ 
+        subscriptionType, 
+        node_id, 
+        publishCount, 
+        totalChannels: channels.length 
+      }, 'WordPress event processed successfully');
+
+    } catch (error) {
+      logger.error({ error }, 'Failed to process webhook event');
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({
+        error: 'Internal Server Error',
+        message: 'Failed to process webhook event'
+      }));
+    }
+  }
+
+  /**
+   * Map WordPress event to subscription type
+   */
+  private mapWordPressEventToSubscription(node_type: string, action: string): string | null {
+    // Map WordPress events to GraphQL subscription names
+    const eventMap: Record<string, Record<string, string>> = {
+      'post': {
+        'CREATE': 'postCreated',
+        'UPDATE': 'postUpdated',
+        'DELETE': 'postDeleted',
+      },
+      'user': {
+        'CREATE': 'userCreated',
+        'UPDATE': 'userUpdated',
+        'DELETE': 'userDeleted',
+      },
+      'comment': {
+        'CREATE': 'commentCreated',
+        'UPDATE': 'commentUpdated',
+        'DELETE': 'commentDeleted',
+      },
+    };
+
+    return eventMap[node_type]?.[action] || null;
   }
 }

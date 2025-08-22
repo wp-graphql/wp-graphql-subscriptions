@@ -41,7 +41,7 @@ export function createLogger(config: ServerConfig) {
       host: config.host,
       nodeEnv: config.nodeEnv,
       wpgraphqlEndpoint: config.wpgraphqlEndpoint,
-      redisUrl: config.redisUrl.replace(/\/\/.*@/, '//***:***@'), // Hide credentials
+      redisUrl: config.redis.url.replace(/\/\/.*@/, '//***:***@'), // Hide credentials
       logLevel: config.logLevel,
       corsOrigin: config.corsOrigin,
     },

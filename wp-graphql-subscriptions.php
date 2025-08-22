@@ -17,8 +17,9 @@ if ( ! defined( 'ABSPATH' ) ) {
 require_once __DIR__ . '/includes/transport-webhook.php';
 
 // Subscription Security (token validation for sidecar)
-// Temporarily disabled for debugging
-// require_once __DIR__ . '/includes/subscription-security.php';
+error_log('WPGraphQL Subscriptions: About to load subscription-security.php');
+require_once __DIR__ . '/includes/subscription-security.php';
+error_log('WPGraphQL Subscriptions: Finished loading subscription-security.php');
 
 // Include the Subscription Manager class.
 require_once __DIR__ . '/includes/class-wpgraphql-subscription-manager.php';

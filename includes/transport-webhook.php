@@ -5,9 +5,9 @@
 // For now, this is a simple proof of concept that sends all events to a single webhook.
 add_action( 'graphql_subscription_event', function( $event_type, $payload ) {
     
-    // Send to the GraphQL Yoga sidecar server
+    // Send to the SSE-2 sidecar server
     $response = wp_remote_post( 
-        'http://localhost:4000/webhook/subscription-event',
+        'http://localhost:4000/webhook',
         [
             'headers' => [
                 'Content-Type' => 'application/json',
