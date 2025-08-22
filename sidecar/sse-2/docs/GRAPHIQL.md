@@ -1,303 +1,361 @@
-# GraphiQL IDE Integration
+# Custom GraphiQL Implementation
 
 ## Overview
 
-Since SSE-2 is a subscription-only server, we need a GraphiQL IDE that can:
-1. **Introspect the WPGraphQL schema** to show available subscriptions
-2. **Handle SSE subscriptions** properly (not regular GraphQL execution)
-3. **Provide a great developer experience** for testing subscriptions
+SSE-2 includes a custom-built GraphiQL IDE specifically optimized for GraphQL subscriptions. Unlike the standard CDN-based approach, our custom implementation provides:
 
-## Implementation Options
+1. **🔍 Proper AST parsing** - Uses `graphql-js` for accurate operation detection
+2. **⚡ Pre-validation** - Catches syntax and variable errors before subscription creation
+3. **🎨 Real-time updates** - Native SSE subscription support with async iterators
+4. **🌐 Cross-browser compatibility** - Works in regular and incognito/private modes
+5. **📱 Modern interface** - Custom React components with TypeScript
 
-### Option 1: Custom GraphiQL with SSE Support ⭐ **RECOMMENDED**
-
-Build a custom GraphiQL interface that:
-- Uses the WPGraphQL schema for introspection and autocomplete
-- Redirects subscription operations to our SSE endpoint
-- Shows real-time subscription results
-- Provides helpful error messages
-
-**Pros:**
-- ✅ Perfect integration with our SSE protocol
-- ✅ Full control over subscription handling
-- ✅ Can show real-time events properly
-- ✅ Custom documentation and examples
-
-**Cons:**
-- ❌ More development work
-- ❌ Need to maintain custom GraphiQL build
-
-### Option 2: GraphiQL with Custom Fetcher
-
-Use standard GraphiQL with a custom fetcher that handles SSE:
-- Standard GraphiQL interface
-- Custom subscription fetcher for SSE protocol
-- Schema introspection from WPGraphQL
-
-**Pros:**
-- ✅ Less custom code
-- ✅ Standard GraphiQL features
-- ✅ Easy to maintain
-
-**Cons:**
-- ❌ May have UI quirks with subscriptions
-- ❌ Limited customization options
-
-### Option 3: Separate Testing Interface
-
-Build a simple custom testing interface:
-- Basic subscription input form
-- Real-time event display
-- Schema browser
-
-**Pros:**
-- ✅ Minimal and focused
-- ✅ Perfect for our use case
-- ✅ Easy to build and maintain
-
-**Cons:**
-- ❌ No GraphiQL features (autocomplete, docs)
-- ❌ Less familiar to developers
-
-## Recommended Approach: GraphiQL with Custom Fetcher (GraphQL Yoga Pattern)
-
-Let's implement **Option 2** - standard GraphiQL with a custom fetcher, following GraphQL Yoga's elegant content negotiation pattern.
-
-### GraphQL Yoga's Content Negotiation Pattern
-
-GraphQL Yoga uses **content negotiation** on a single endpoint - we'll follow the same pattern:
+## Architecture
 
 ```
-Browser Request → /graphql endpoint
-                      │
-                      ▼
-            ┌─────────────────────┐
-            │   Content           │
-            │   Negotiation       │
-            │   (Accept Header)   │
-            └─────────────────────┘
-                      │
-        ┌─────────────┼─────────────┐
-        ▼             ▼             ▼
-┌─────────────┐ ┌─────────────┐ ┌─────────────┐
-│GET + html   │ │POST + json  │ │POST + sse   │
-│             │ │             │ │             │
-│Serve        │ │Handle       │ │Handle       │
-│GraphiQL     │ │Introspection│ │Subscriptions│
-│HTML         │ │Queries      │ │via SSE      │
-└─────────────┘ └─────────────┘ └─────────────┘
+Browser Request → /graphql
+        │
+        ▼
+┌─────────────────┐
+│   HTTP Server   │
+│ Content Negotiation │
+└─────────────────┘
+        │
+        ▼
+┌─────────────────┐
+│ Static File     │
+│ Serving         │
+│ /graphiql.html  │
+│ /graphiql-bundle.js │
+└─────────────────┘
+        │
+        ▼
+┌─────────────────┐
+│ Custom GraphiQL │
+│ React Component │
+│ + SSE Fetcher   │
+└─────────────────┘
 ```
 
-**Single Endpoint Logic:**
+## Build System
+
+### Webpack Configuration
+
+Our custom build uses webpack with the following setup:
+
+```javascript
+// webpack.config.cjs
+module.exports = {
+  entry: './src/graphiql/index.tsx',
+  output: {
+    path: path.resolve(__dirname, 'dist/public'),
+    filename: 'graphiql-bundle.js',
+  },
+  module: {
+    rules: [
+      {
+        test: /\.(ts|tsx)$/,
+        use: 'babel-loader',
+        exclude: /node_modules/,
+      },
+      {
+        test: /\.css$/,
+        use: ['style-loader', 'css-loader'],
+      },
+    ],
+  },
+  plugins: [
+    new HtmlWebpackPlugin({
+      template: './src/graphiql/index.html',
+      filename: 'graphiql.html',
+    }),
+  ],
+};
+```
+
+### Build Commands
+
+```bash
+# Development build with watch
+npm run build:graphiql:dev
+
+# Production build
+npm run build:graphiql
+
+# Build everything (server + GraphiQL)
+npm run build
+```
+
+## Custom GraphiQL Component
+
+### Core Features
+
+**AST-Based Operation Detection:**
 ```typescript
-app.all('/graphql', (req, res) => {
-  if (req.method === 'GET' && req.headers.accept?.includes('text/html')) {
-    return serveGraphiQL(req, res);
-  } else if (req.method === 'POST' && req.headers.accept?.includes('application/json')) {
-    return handleIntrospection(req, res);
-  } else if (req.method === 'POST' && req.headers.accept?.includes('text/event-stream')) {
-    return handleSSESubscription(req, res);
+// Uses graphql-js parse() instead of regex
+const ast = parse(graphQLParams.query);
+const operationDef = ast.definitions.find(def => 
+  def.kind === 'OperationDefinition'
+);
+const operationType = operationDef?.operation;
+```
+
+**Pre-Subscription Validation:**
+```typescript
+// Server-side validation before SSE connection
+const validation = await this.validateSubscription(graphqlRequest);
+if (!validation.isValid) {
+  // Return 400 with specific error messages
+  res.end(JSON.stringify({ errors: validation.errors }));
+  return;
+}
+```
+
+**SSE Async Iterator:**
+```typescript
+// Proper async generator for GraphiQL subscriptions
+async function* createSSESubscription(params) {
+  const response = await fetch('/graphql', {
+    method: 'POST',
+    headers: { 'Accept': 'text/event-stream' },
+    body: JSON.stringify(params),
+  });
+  
+  // Handle validation errors
+  if (!response.ok && response.status === 400) {
+    const errorResponse = await response.json();
+    yield errorResponse;
+    return;
   }
+  
+  // Stream SSE events
+  const reader = response.body.getReader();
+  // ... SSE parsing logic
+}
+```
+
+## Validation System
+
+### Server-Side Validation
+
+The server validates subscriptions before establishing SSE connections:
+
+**GraphQL Syntax Validation:**
+```typescript
+try {
+  const document = parse(graphqlRequest.query);
+  const operationAST = getOperationAST(document, graphqlRequest.operationName);
+} catch (error) {
+  return { isValid: false, errors: [{ message: `GraphQL syntax error: ${error.message}` }] };
+}
+```
+
+**Operation Type Validation:**
+```typescript
+if (operationAST.operation !== 'subscription') {
+  return {
+    isValid: false,
+    errors: [{ message: `Operation must be a subscription, got ${operationAST.operation}` }]
+  };
+}
+```
+
+**Variable Validation:**
+```typescript
+const variableDefinitions = operationAST.variableDefinitions || [];
+const providedVariables = graphqlRequest.variables || {};
+
+for (const varDef of variableDefinitions) {
+  const varName = varDef.variable.name.value;
+  const isRequired = varDef.type.kind === 'NonNullType';
+  
+  if (isRequired && !(varName in providedVariables)) {
+    missingVariables.push(varName);
+  }
+}
+```
+
+### Validation Error Examples
+
+**Missing Required Variables:**
+```json
+{
+  "errors": [
+    {
+      "message": "Variable \"$id\" of required type was not provided.",
+      "locations": []
+    }
+  ]
+}
+```
+
+**Invalid Operation Type:**
+```json
+{
+  "errors": [
+    {
+      "message": "Operation must be a subscription, got query",
+      "locations": []
+    }
+  ]
+}
+```
+
+**Syntax Errors:**
+```json
+{
+  "errors": [
+    {
+      "message": "GraphQL syntax error: Syntax Error: Expected Name, found }",
+      "locations": []
+    }
+  ]
+}
+```
+
+## File Structure
+
+```
+src/graphiql/
+├── index.tsx              # Entry point and React root
+├── CustomGraphiQL.tsx     # Main GraphiQL component
+└── index.html            # HTML template
+
+dist/public/              # Built assets
+├── graphiql.html         # Generated HTML
+├── graphiql-bundle.js    # Main bundle
+├── *.js                  # Code-split chunks
+└── *.js.map             # Source maps
+```
+
+### Key Files
+
+**Entry Point (`src/graphiql/index.tsx`):**
+```typescript
+import React from 'react';
+import { createRoot } from 'react-dom/client';
+import CustomGraphiQL from './CustomGraphiQL';
+
+const container = document.getElementById('graphiql');
+if (container) {
+  const root = createRoot(container);
+  root.render(<CustomGraphiQL />);
+}
+```
+
+**Custom Component (`src/graphiql/CustomGraphiQL.tsx`):**
+- GraphiQL component with custom fetcher
+- AST-based operation detection
+- SSE subscription handling
+- Error handling and validation display
+
+**HTML Template (`src/graphiql/index.html`):**
+- Minimal HTML structure
+- Responsive viewport meta tags
+- CSS reset and GraphiQL container
+
+## Server Integration
+
+### Static File Serving
+
+```typescript
+// HTTP server serves built GraphiQL assets
+if (parsedUrl.pathname?.endsWith('.js') || parsedUrl.pathname?.endsWith('.map')) {
+  await this.handleStaticFile(req, res, logger, parsedUrl.pathname);
+}
+```
+
+### Content Negotiation
+
+```typescript
+// Serve GraphiQL for browser requests
+if (req.method === 'GET' && acceptHeader.includes('text/html')) {
+  return this.handleGraphiQL(req, res, logger);
+}
+```
+
+### GraphiQL HTML Loading
+
+```typescript
+private async loadCustomGraphiQLHTML(): Promise<string> {
+  try {
+    const htmlPath = join(__dirname, '../../dist/public/graphiql.html');
+    return await readFile(htmlPath, 'utf-8');
+  } catch (error) {
+    // Fallback error page with build instructions
+    return this.getFallbackHTML();
+  }
+}
+```
+
+## Development Workflow
+
+### Hot Reload Development
+
+```bash
+# Terminal 1: Build GraphiQL with watch
+npm run build:graphiql:dev
+
+# Terminal 2: Start server with hot reload
+npm run dev
+
+# Visit: http://localhost:4000/graphql
+```
+
+### Production Deployment
+
+```bash
+# Build everything
+npm run build
+
+# Start production server
+npm start
+```
+
+## Cross-Browser Compatibility
+
+### Incognito/Private Mode Support
+
+Our implementation handles browser-specific behaviors:
+
+**Enhanced SSE Headers:**
+```typescript
+res.writeHead(200, {
+  'Content-Type': 'text/event-stream; charset=utf-8',
+  'Cache-Control': 'no-cache, no-store, must-revalidate',
+  'Pragma': 'no-cache',
+  'Expires': '0',
+  'Connection': 'keep-alive',
+  'X-Accel-Buffering': 'no',
 });
 ```
 
-### Implementation Plan
-
-#### 1. Content Negotiation Server
+**Operation Detection Fallback:**
 ```typescript
-private async handleRequest(req: IncomingMessage, res: ServerResponse) {
-  if (req.url !== '/graphql') {
-    res.writeHead(404);
-    res.end('Not Found');
-    return;
-  }
-
-  const acceptHeader = req.headers.accept || '';
-
-  if (req.method === 'GET' && acceptHeader.includes('text/html')) {
-    // Serve GraphiQL HTML
-    return this.serveGraphiQL(req, res);
-  } else if (req.method === 'POST' && acceptHeader.includes('text/event-stream')) {
-    // Handle SSE subscriptions
-    return this.handleSSESubscription(req, res);
-  } else if (req.method === 'POST' && acceptHeader.includes('application/json')) {
-    // Handle introspection queries
-    return this.handleIntrospection(req, res);
-  } else {
-    res.writeHead(400);
-    res.end('Bad Request');
-  }
-}
+// Enhanced regex fallback for edge cases
+const patterns = [
+  /^\s*(subscription)\s+\w+/i,
+  /^\s*(subscription)\s*\{/i,
+  /^\s*(subscription)\s*\(/i,
+];
 ```
 
-#### 2. GraphiQL HTML Template
-```typescript
-private serveGraphiQL(req: IncomingMessage, res: ServerResponse) {
-  const graphiqlHTML = `
-<!DOCTYPE html>
-<html>
-<head>
-  <title>SSE-2 GraphiQL</title>
-  <link rel="stylesheet" href="https://unpkg.com/graphiql@3/graphiql.min.css" />
-  <style>
-    body { margin: 0; height: 100vh; }
-    #graphiql { height: 100vh; }
-  </style>
-</head>
-<body>
-  <div id="graphiql">Loading...</div>
-  
-  <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
-  <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
-  <script src="https://unpkg.com/graphiql@3/graphiql.min.js"></script>
-  
-  <script>
-    ${this.getCustomFetcher()}
-  </script>
-</body>
-</html>`;
+## User Experience Features
 
-  res.writeHead(200, { 'Content-Type': 'text/html' });
-  res.end(graphiqlHTML);
-}
-```
+### Default Query Template
 
-#### 3. Custom SSE Fetcher Implementation
-```typescript
-private getCustomFetcher(): string {
-  return `
-    // Custom fetcher that handles introspection and subscriptions
-    const customFetcher = (graphQLParams, opts) => {
-      const { query, variables, operationName } = graphQLParams;
-      
-      // Check if it's an introspection query
-      if (query.includes('__schema') || query.includes('__type') || query.includes('IntrospectionQuery')) {
-        // Use regular fetch for introspection
-        return fetch('/graphql', {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'Accept': 'application/json'
-          },
-          body: JSON.stringify({ query, variables, operationName })
-        }).then(res => res.json());
-      }
-      
-      // Check if it's a subscription
-      if (query.trim().startsWith('subscription')) {
-        // Use SSE for subscriptions
-        return new Promise((resolve, reject) => {
-          let hasResolved = false;
-          
-          fetch('/graphql', {
-            method: 'POST',
-            headers: {
-              'Content-Type': 'application/json',
-              'Accept': 'text/event-stream'
-            },
-            body: JSON.stringify({ query, variables, operationName })
-          })
-          .then(response => {
-            if (!response.ok) {
-              return response.json().then(reject);
-            }
-            
-            // Handle SSE stream
-            const reader = response.body.getReader();
-            const decoder = new TextDecoder();
-            
-            const readStream = () => {
-              reader.read().then(({ done, value }) => {
-                if (done) {
-                  if (!hasResolved) {
-                    resolve({ data: null });
-                    hasResolved = true;
-                  }
-                  return;
-                }
-                
-                const text = decoder.decode(value);
-                const events = parseSSEEvents(text);
-                
-                events.forEach(event => {
-                  if (event.type === 'next' && !hasResolved) {
-                    try {
-                      const data = JSON.parse(event.data);
-                      resolve(data);
-                      hasResolved = true;
-                    } catch (e) {
-                      reject(e);
-                    }
-                  } else if (event.type === 'complete' && !hasResolved) {
-                    resolve({ data: null });
-                    hasResolved = true;
-                  }
-                });
-                
-                if (!hasResolved) {
-                  readStream(); // Continue reading
-                }
-              }).catch(reject);
-            };
-            
-            readStream();
-          })
-          .catch(reject);
-        });
-      }
-      
-      // Non-subscription operation - show helpful error
-      return Promise.resolve({
-        errors: [{
-          message: 'Only subscription operations are supported. Use queries and mutations against WPGraphQL directly.',
-          extensions: {
-            code: 'OPERATION_NOT_SUPPORTED',
-            wpgraphqlEndpoint: '${process.env.WPGRAPHQL_ENDPOINT || 'http://localhost/graphql'}'
-          }
-        }]
-      });
-    };
-    
-    // Helper function to parse SSE events
-    function parseSSEEvents(text) {
-      const events = [];
-      const lines = text.split('\\n');
-      let currentEvent = {};
-      
-      for (const line of lines) {
-        if (line.startsWith('event:')) {
-          currentEvent.type = line.substring(6).trim();
-        } else if (line.startsWith('data:')) {
-          currentEvent.data = line.substring(5).trim();
-        } else if (line === '') {
-          if (currentEvent.type) {
-            events.push(currentEvent);
-            currentEvent = {};
-          }
-        }
-      }
-      
-      return events;
-    }
-    
-    // Initialize GraphiQL
-    const root = ReactDOM.createRoot(document.getElementById('graphiql'));
-    root.render(
-      React.createElement(GraphiQL, {
-        fetcher: customFetcher,
-        defaultQuery: \`# Welcome to SSE-2 GraphiQL
+```graphql
+# Welcome to WPGraphQL Subscriptions IDE!
 # 
-# This server only supports GraphQL subscriptions.
-# For queries and mutations, use WPGraphQL directly.
-#
+# This custom GraphiQL interface supports real-time GraphQL subscriptions.
 # Try this example subscription:
 
 subscription PostUpdated($id: ID!) {
   postUpdated(id: $id) {
     id
     title
+    modified
     content
-    dateModified
     author {
       node {
         name
@@ -307,217 +365,113 @@ subscription PostUpdated($id: ID!) {
 }
 
 # Variables:
-# {
-#   "id": "1"
-# }\`,
-        variables: JSON.stringify({ id: "1" }, null, 2)
-      })
-    );
-  `;
-}
+# { "id": "147" }
+
+# After running the subscription, edit post 147 in WordPress
+# to see real-time updates appear here!
 ```
 
-#### 4. Introspection Handler
+### Spinner Behavior
+
+- **Native GraphiQL spinner** shows during initial connection
+- **Immediate error display** for validation failures
+- **Real-time updates** once subscription is established
+
+### Error Handling
+
+- **Validation errors** display immediately without SSE connection
+- **Network errors** show proper HTTP status messages
+- **Syntax errors** highlight specific issues in the query
+
+## Performance Optimizations
+
+### Bundle Optimization
+
+- **Code splitting** - Separate chunks for better caching
+- **Tree shaking** - Only include used GraphiQL components
+- **Minification** - Production builds are optimized
+- **Source maps** - Available for debugging
+
+### Caching Strategy
+
 ```typescript
-private async handleIntrospection(req: IncomingMessage, res: ServerResponse) {
-  try {
-    // Get request body
-    const body = await this.getRequestBody(req);
-    const { query, variables, operationName } = JSON.parse(body);
-    
-    // Only allow introspection queries
-    if (!query.includes('__schema') && !query.includes('__type') && operationName !== 'IntrospectionQuery') {
-      res.writeHead(400, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({
-        errors: [{
-          message: 'Only introspection queries are supported on this endpoint for JSON responses.',
-          extensions: { code: 'OPERATION_NOT_SUPPORTED' }
-        }]
-      }));
-      return;
-    }
-    
-    // Forward introspection to WPGraphQL
-    const response = await fetch(process.env.WPGRAPHQL_ENDPOINT!, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ query, variables, operationName })
-    });
-    
-    const result = await response.json();
-    
-    res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify(result));
-    
-  } catch (error) {
-    res.writeHead(500, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({
-      errors: [{ message: 'Internal server error' }]
-    }));
-  }
-}
-```
-
-### Example Subscriptions
-
-We'll include helpful example subscriptions in the GraphiQL interface:
-
-```graphql
-# Post Updates
-subscription PostUpdated($id: ID!) {
-  postUpdated(id: $id) {
-    id
-    title
-    content
-    dateModified
-    author {
-      node {
-        name
-      }
-    }
-  }
-}
-
-# Comment Updates
-subscription CommentUpdated($postId: ID!) {
-  commentUpdated(postId: $postId) {
-    id
-    content
-    date
-    author {
-      node {
-        name
-        email
-      }
-    }
-    commentedOn {
-      node {
-        id
-        title
-      }
-    }
-  }
-}
-
-# User Updates
-subscription UserUpdated($id: ID!) {
-  userUpdated(id: $id) {
-    id
-    name
-    email
-    roles {
-      nodes {
-        name
-      }
-    }
-  }
-}
-```
-
-### Benefits of GraphQL Yoga Approach
-
-#### ✅ **Familiar Pattern**
-- Same pattern as GraphQL Yoga (developers know how to use it)
-- Single endpoint with content negotiation (`/graphql`)
-- Standard GraphiQL interface with all features
-
-#### ✅ **Minimal Custom Code**
-- Use standard GraphiQL library (not custom build)
-- Only custom part is the fetcher function
-- Less maintenance overhead
-
-#### ✅ **Full GraphiQL Features**
-- Schema introspection and autocomplete from WPGraphQL
-- Documentation explorer with all subscription fields
-- Query formatting, validation, and syntax highlighting
-- Variable editor and query history
-
-#### ✅ **Proper Subscription Handling**
-- SSE subscriptions work correctly with real-time streaming
-- Helpful errors for non-subscription operations
-- Seamless developer experience
-
-### File Structure
-
-```
-sidecar/sse-2/
-├── src/
-│   ├── server.ts              # Main server with content negotiation
-│   ├── graphiql/
-│   │   ├── template.ts        # HTML template generation
-│   │   ├── fetcher.ts         # Custom SSE fetcher logic
-│   │   └── examples.ts        # Default queries and examples
-│   └── introspection/
-│       └── proxy.ts           # WPGraphQL schema introspection proxy
-└── tests/                     # GraphiQL integration tests
-```
-
-### Testing Strategy
-
-#### 1. **Manual Testing**
-- Test subscription creation and streaming
-- Verify error handling for non-subscriptions
-- Test with different subscription types
-- Verify schema introspection works
-
-#### 2. **Automated Testing**
-- Unit tests for SSE fetcher
-- Integration tests for GraphiQL endpoint
-- E2E tests for subscription flow
-
-#### 3. **User Experience Testing**
-- Test with developers unfamiliar with the system
-- Gather feedback on interface usability
-- Iterate on error messages and documentation
-
-### Alternative: GraphiQL Subscriptions Plugin
-
-If building a custom GraphiQL proves complex, we could use existing GraphiQL subscription plugins:
-
-```bash
-npm install @graphiql/plugin-explorer graphiql-subscriptions-fetcher
-```
-
-```javascript
-import { createGraphiQLFetcher } from '@graphiql/toolkit';
-import { subscriptionExchange } from 'graphiql-subscriptions-fetcher';
-
-const fetcher = createGraphiQLFetcher({
-  url: '/graphql',
-  subscriptionUrl: '/graphql', // Same endpoint, different headers
-  headers: {
-    'Accept': 'text/event-stream'
-  }
+res.writeHead(200, {
+  'Content-Type': 'application/javascript',
+  'Cache-Control': 'public, max-age=31536000', // 1 year cache
 });
 ```
 
-### Configuration Options
+## Testing Strategy
 
-```typescript
-interface GraphiQLConfig {
-  endpoint: string;           // SSE-2 server endpoint
-  wpgraphqlEndpoint: string; // WPGraphQL endpoint for schema
-  defaultQuery?: string;     // Default subscription to show
-  theme?: 'light' | 'dark';  // UI theme
-  examples: {               // Example subscriptions
-    name: string;
-    query: string;
-    variables?: any;
-  }[];
-}
+### Manual Testing Checklist
+
+- [ ] GraphiQL loads without errors
+- [ ] Syntax validation works for invalid queries
+- [ ] Variable validation catches missing required variables
+- [ ] Operation type validation rejects queries/mutations
+- [ ] SSE subscriptions establish correctly
+- [ ] Real-time updates display properly
+- [ ] Cross-browser compatibility (Chrome, Firefox, Safari)
+- [ ] Incognito/private mode functionality
+
+### Automated Testing
+
+```bash
+# Unit tests for validation logic
+npm run test
+
+# Integration tests for GraphiQL endpoint
+npm run test:integration
+
+# E2E tests for subscription workflow
+npm run test:e2e
 ```
 
-### Deployment
+## Troubleshooting
 
-The GraphiQL interface will be served at:
-- **Development**: `http://localhost:4000/graphiql`
-- **Production**: Configurable, could be disabled for security
+### Common Issues
 
-### Security Considerations
+**GraphiQL Bundle Not Found:**
+```
+GraphiQL Loading Error - The custom GraphiQL bundle could not be loaded
+```
+**Solution:** Run `npm run build:graphiql` then restart server
 
-1. **Production Access**: GraphiQL should be disabled or protected in production
-2. **CORS**: Proper CORS headers for browser access
-3. **Rate Limiting**: Prevent abuse of the GraphiQL interface
-4. **Authentication**: Optional authentication for GraphiQL access
+**Validation Errors Not Displaying:**
+- Check browser console for JavaScript errors
+- Verify GraphiQL bundle is loading correctly
+- Ensure server validation is working
 
-This GraphiQL integration will provide an excellent developer experience for testing and exploring subscriptions! 🚀
+**SSE Connection Issues:**
+- Verify `Accept: text/event-stream` header is sent
+- Check server logs for connection establishment
+- Test with simple curl command
+
+### Debug Mode
+
+```bash
+# Enable debug logging
+LOG_LEVEL=debug npm run dev
+
+# Check GraphiQL console logs
+# Open browser dev tools → Console
+```
+
+## Future Enhancements
+
+### Planned Features
+
+1. **Connection Status Indicator** - Show real-time connection state
+2. **Event History** - Display previous subscription events
+3. **Subscription Templates** - Pre-built common subscriptions
+4. **Performance Metrics** - Show latency and event counts
+5. **Dark Mode Support** - Theme customization options
+
+### Extension Points
+
+- **Custom CSS themes** via webpack configuration
+- **Additional validation rules** in server validation
+- **Custom error messages** for specific use cases
+- **Integration with GraphiQL plugins** for enhanced features
+
+This custom GraphiQL implementation provides a robust, production-ready interface specifically optimized for GraphQL subscriptions with excellent developer experience! 🚀

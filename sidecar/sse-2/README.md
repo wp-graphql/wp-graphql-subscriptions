@@ -14,6 +14,8 @@ SSE-2 is a minimal sidecar server designed specifically for real-time GraphQL su
 - ⚡ **Minimal**: Lightweight with few dependencies
 - 🔄 **Event-Driven**: Redis pub/sub integration
 - 📊 **Observable**: Comprehensive logging and monitoring
+- 🎨 **Custom GraphiQL**: Built-in IDE with proper AST parsing and validation
+- ✅ **Pre-Validation**: Catches syntax and variable errors before subscription creation
 
 ## Architecture
 
@@ -32,14 +34,17 @@ Client → SSE-2 → Redis ← WordPress
 
 ## Current Status
 
-🚧 **In Development** - Phase 1.2 Complete, Phase 1.3 Next
+🚧 **In Development** - Phase 1.3 Complete, Phase 1.4 Next
 
 - ✅ **Phase 1.1**: Project Setup - TypeScript foundation, configuration, logging
 - ✅ **Phase 1.2**: HTTP Server - Content negotiation, GraphiQL IDE, SSE handling  
-- ⏳ **Phase 1.3**: GraphQL Validation - Next up!
+- ✅ **Phase 1.3**: Custom GraphiQL & Validation - AST parsing, pre-validation, custom build
+- ⏳ **Phase 1.4**: Enhanced Features - Connection status, event history, templates
 
 **Ready to test:**
-- GraphiQL IDE at `http://localhost:4000/graphql`
+- Custom GraphiQL IDE at `http://localhost:4000/graphql`
+- Real-time subscription validation with proper error messages
+- Cross-browser compatibility (including incognito mode)
 - Content negotiation for different request types
 - Environment configuration via `.env` file
 
@@ -96,20 +101,68 @@ LOG_PRETTY=true
 # Start development server
 npm run dev
 
-# Visit GraphiQL IDE
+# Visit custom GraphiQL IDE
 open http://localhost:4000/graphql
+
+# Build GraphiQL in development mode (with watch)
+npm run build:graphiql:dev
 ```
 
 ### Production
 
 ```bash
+# Build everything (server + GraphiQL)
 npm run build
+
+# Start production server
 npm start
+
+# Build only GraphiQL bundle
+npm run build:graphiql
 ```
 
 **With Redis (for full functionality):**
 ```bash
 npm run dev:full  # Starts Redis + dev server
+```
+
+## Custom GraphiQL IDE
+
+SSE-2 includes a custom-built GraphiQL interface optimized for subscriptions:
+
+### Features
+- **🔍 AST-based parsing** - Uses `graphql-js` for accurate operation detection
+- **⚡ Pre-validation** - Catches syntax and variable errors before subscription creation  
+- **🎨 Real-time updates** - Native SSE subscription support with proper async iterators
+- **🌐 Cross-browser** - Works in regular and incognito/private browsing modes
+- **📱 Responsive** - Modern, mobile-friendly interface
+- **🎯 Subscription-focused** - Tailored specifically for subscription workflows
+
+### Validation Examples
+
+**Missing Variables:**
+```graphql
+subscription PostUpdated($id: ID!) {
+  postUpdated(id: $id) { id title }
+}
+# Without variables: {"id": "147"}
+# Result: "Variable '$id' of required type was not provided."
+```
+
+**Syntax Errors:**
+```graphql
+subscription PostUpdated {
+  postUpdated(id: $invalidSyntax) { id title }
+}
+# Result: "GraphQL syntax error: ..."
+```
+
+**Operation Type Validation:**
+```graphql
+query GetPost {
+  post(id: 1) { id title }
+}
+# Result: "Operation must be a subscription, got query"
 ```
 
 ## Usage
@@ -238,21 +291,35 @@ define('WPGRAPHQL_SUBSCRIPTION_SECRET', 'your-secret-key');
 sidecar/sse-2/
 ├── docs/                   # Documentation
 ├── src/
-│   ├── server.ts          # Main HTTP server
+│   ├── server/            # HTTP server implementation
 │   ├── subscription/      # Subscription management
 │   ├── redis/             # Redis integration  
-│   ├── wpgraphql/         # WPGraphQL client
-│   ├── sse/               # SSE protocol
-│   └── utils/             # Utilities
+│   ├── graphql/           # GraphQL client & parsing
+│   ├── graphiql/          # Custom GraphiQL source
+│   │   ├── CustomGraphiQL.tsx  # React component
+│   │   ├── index.tsx      # Entry point
+│   │   └── index.html     # HTML template
+│   ├── logger/            # Logging utilities
+│   ├── config/            # Configuration
+│   └── types/             # TypeScript definitions
+├── dist/
+│   ├── public/            # Built GraphiQL bundle
+│   └── *.js               # Compiled server code
 ├── tests/                 # Tests
+├── webpack.config.cjs     # GraphiQL build config
 └── package.json
 ```
 
 ### Scripts
 
-- `npm run dev` - Development with hot reload
-- `npm run build` - Build for production
+- `npm run dev` - Development server with hot reload
+- `npm run build` - Build everything (server + GraphiQL)
+- `npm run build:server` - Build only server code
+- `npm run build:graphiql` - Build only GraphiQL bundle
+- `npm run build:graphiql:dev` - Build GraphiQL with watch mode
 - `npm run start` - Start production server
+- `npm run restart` - Kill existing processes and restart dev server
+- `npm run kill` - Kill all related processes
 - `npm run test` - Run tests
 - `npm run lint` - Lint code
 
@@ -317,9 +384,12 @@ SSE-2 generates HMAC tokens for WPGraphQL requests:
 
 ### Input Validation
 
-- GraphQL document parsing and validation
-- Variable sanitization
-- Operation complexity limits
+- **GraphQL AST parsing** - Uses `graphql-js` for accurate syntax validation
+- **Operation type validation** - Ensures only subscription operations are accepted
+- **Variable validation** - Checks required variables are provided before subscription creation
+- **Pre-execution validation** - Catches errors before establishing SSE connections
+- **Variable sanitization** - Validates variable types and values
+- **Operation complexity limits** - Prevents overly complex subscriptions
 
 ## Troubleshooting
 
@@ -342,6 +412,24 @@ Error: connect ECONNREFUSED 127.0.0.1:6379
 Error: Failed to introspect WPGraphQL schema
 ```
 **Solution**: Verify WPGraphQL endpoint is accessible
+
+#### GraphiQL Loading Error
+```
+GraphiQL Loading Error - The custom GraphiQL bundle could not be loaded
+```
+**Solution**: Run `npm run build:graphiql` then restart server
+
+#### Variable Validation Error
+```
+{"errors":[{"message":"Variable \"$id\" of required type was not provided."}]}
+```
+**Solution**: Add required variables in GraphiQL variables panel: `{"id": "147"}`
+
+#### Subscription Not Detected
+```
+Operation must be a subscription, got query
+```
+**Solution**: Ensure your operation starts with `subscription` keyword
 
 ### Debug Mode
 

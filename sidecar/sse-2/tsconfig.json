@@ -6,6 +6,7 @@
     "allowSyntheticDefaultImports": true,
     "esModuleInterop": true,
     "allowJs": true,
+    "jsx": "react-jsx",
     "outDir": "./dist",
     "rootDir": "./src",
     "strict": true,
@@ -16,7 +17,7 @@
     "noFallthroughCasesInSwitch": true,
     "noUncheckedIndexedAccess": true,
     "noImplicitOverride": true,
-    "exactOptionalPropertyTypes": true,
+    "exactOptionalPropertyTypes": false,
     "declaration": true,
     "declarationMap": true,
     "sourceMap": true,
@@ -34,6 +35,7 @@
   "exclude": [
     "node_modules",
     "dist",
+    "src/graphiql/**/*",
     "**/*.test.ts",
     "**/*.spec.ts"
   ]

@@ -22,6 +22,7 @@ export interface ActiveSubscription {
   args: Record<string, any>;
   createdAt: number;
   sseResponse: ServerResponse;
+  context?: { headers?: Record<string, string> };
 }
 
 export class SubscriptionManager {
@@ -45,7 +46,8 @@ export class SubscriptionManager {
   async createSubscription(
     subscriptionId: string,
     graphqlRequest: GraphQLRequest,
-    sseResponse: ServerResponse
+    sseResponse: ServerResponse,
+    context?: { headers?: Record<string, string> }
   ): Promise<ActiveSubscription> {
     this.logger.info({ subscriptionId }, 'Creating new subscription');
 
@@ -69,6 +71,7 @@ export class SubscriptionManager {
       args,
       createdAt: Date.now(),
       sseResponse,
+      context: context || {},
     };
 
     // Store subscription
@@ -207,11 +210,13 @@ export class SubscriptionManager {
       }, 'Prepared root value for WPGraphQL');
 
       // Execute the subscription query against WPGraphQL with the formatted root value
+      // Include the original request headers (cookies, auth) for proper authentication
       const result = await this.wpgraphqlClient.executeSubscription(
         subscription.query,
         subscription.variables,
         subscription.operationName,
-        rootValue
+        rootValue,
+        subscription.context?.headers || {}
       );
 
       // Send the GraphQL result as SSE event

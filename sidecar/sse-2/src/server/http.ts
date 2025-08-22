@@ -5,11 +5,19 @@
 
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import { parse as parseUrl } from 'node:url';
+import { readFile, stat } from 'node:fs/promises';
+import { join, extname } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { dirname } from 'node:path';
+import { parse, validate, buildSchema, getOperationAST } from 'graphql';
 import type { Logger } from 'pino';
 import type { ServerConfig, ContentNegotiation, GraphQLRequest } from '../types/index.js';
 import { generateRequestId, createRequestLogger } from '../logger/index.js';
 import { RedisClient } from '../redis/client.js';
 import { SubscriptionManager } from '../subscription/manager.js';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = dirname(__filename);
 
 export class HTTPServer {
   private server: ReturnType<typeof createServer>;
@@ -118,6 +126,9 @@ export class HTTPServer {
       } else if (parsedUrl.pathname === '/webhook' && req.method === 'POST') {
         // Handle WordPress webhook events
         await this.handleWebhookEvent(req, res, requestLogger);
+      } else if (parsedUrl.pathname?.startsWith('/static/') || parsedUrl.pathname?.endsWith('.js') || parsedUrl.pathname?.endsWith('.map')) {
+        // Handle static files (GraphiQL bundle)
+        await this.handleStaticFile(req, res, requestLogger, parsedUrl.pathname);
       } else {
         this.sendNotFound(res, requestLogger);
         return;
@@ -158,14 +169,68 @@ export class HTTPServer {
     res.setHeader('Access-Control-Allow-Credentials', 'true');
   }
 
+    /**
+   * Handle static file requests (JS, CSS, maps)
+   */
+  private async handleStaticFile(req: IncomingMessage, res: ServerResponse, logger: Logger, pathname: string): Promise<void> {
+    try {
+      const publicDir = join(__dirname, '../../dist/public');
+      const filename = pathname.replace(/^\/static\//, '').replace(/^\//, '');
+      const filePath = join(publicDir, filename);
+
+      // Security check - ensure file is within public directory
+      if (!filePath.startsWith(publicDir)) {
+        this.sendNotFound(res, logger);
+        return;
+      }
+
+      // Check if file exists
+      await stat(filePath);
+
+      // Read file
+      const content = await readFile(filePath);
+
+      // Determine content type
+      const ext = extname(filePath).toLowerCase();
+      const contentType = this.getContentType(ext);
+
+      res.writeHead(200, {
+        'Content-Type': contentType,
+        'Content-Length': content.length,
+        'Cache-Control': 'public, max-age=31536000', // Cache for 1 year
+      });
+      res.end(content);
+
+      logger.debug({ pathname, filePath, contentType }, 'Served static file');
+
+    } catch (error) {
+      logger.warn({ pathname, error }, 'Static file not found');
+      this.sendNotFound(res, logger);
+    }
+  }
+
+  /**
+   * Get content type for file extension
+   */
+  private getContentType(ext: string): string {
+    const types: Record<string, string> = {
+      '.js': 'application/javascript',
+      '.map': 'application/json',
+      '.css': 'text/css',
+      '.html': 'text/html',
+      '.json': 'application/json',
+    };
+    return types[ext] || 'application/octet-stream';
+  }
+
   /**
    * Handle GraphiQL IDE requests (GET + text/html)
    */
   private async handleGraphiQL(req: IncomingMessage, res: ServerResponse, logger: Logger): Promise<void> {
-    logger.info('Serving GraphiQL IDE');
-    
-    // TODO: Implement GraphiQL HTML template
-    const graphiqlHtml = this.generateGraphiQLHTML();
+    logger.info('Serving custom GraphiQL IDE');
+
+    // Serve the built GraphiQL HTML
+    const graphiqlHtml = await this.loadCustomGraphiQLHTML();
     
     res.writeHead(200, {
       'Content-Type': 'text/html; charset=utf-8',
@@ -227,7 +292,17 @@ export class HTTPServer {
       }
       
       const graphqlRequest = { query, variables, operationName };
-      await this.processSSESubscription(graphqlRequest, res, logger);
+      
+      // Capture headers for authentication
+      const requestHeaders: Record<string, string> = {};
+      if (req.headers.cookie) {
+        requestHeaders.cookie = req.headers.cookie;
+      }
+      if (req.headers.authorization) {
+        requestHeaders.authorization = req.headers.authorization;
+      }
+      
+      await this.processSSESubscription(graphqlRequest, res, logger, requestHeaders);
       
     } catch (error) {
       logger.error({ error }, 'SSE subscription from query error');
@@ -314,7 +389,16 @@ export class HTTPServer {
       const body = await this.parseRequestBody(req);
       const graphqlRequest: GraphQLRequest = JSON.parse(body);
       
-      await this.processSSESubscription(graphqlRequest, res, logger);
+      // Capture headers for authentication
+      const requestHeaders: Record<string, string> = {};
+      if (req.headers.cookie) {
+        requestHeaders.cookie = req.headers.cookie;
+      }
+      if (req.headers.authorization) {
+        requestHeaders.authorization = req.headers.authorization;
+      }
+      
+      await this.processSSESubscription(graphqlRequest, res, logger, requestHeaders);
       
     } catch (error) {
       logger.error({ error }, 'SSE subscription error');
@@ -331,57 +415,139 @@ export class HTTPServer {
   }
 
   /**
+   * Validate GraphQL subscription before processing
+   */
+  private async validateSubscription(graphqlRequest: GraphQLRequest): Promise<{ isValid: boolean; errors?: any[] }> {
+    try {
+      // Parse the query to check syntax
+      const document = parse(graphqlRequest.query);
+      
+      // Get the operation AST
+      const operationAST = getOperationAST(document, graphqlRequest.operationName);
+      
+      if (!operationAST) {
+        return {
+          isValid: false,
+          errors: [{
+            message: `Operation "${graphqlRequest.operationName || 'unnamed'}" not found in query`,
+            locations: []
+          }]
+        };
+      }
+      
+      if (operationAST.operation !== 'subscription') {
+        return {
+          isValid: false,
+          errors: [{
+            message: `Operation must be a subscription, got ${operationAST.operation}`,
+            locations: []
+          }]
+        };
+      }
+
+      // Check for required variables
+      const variableDefinitions = operationAST.variableDefinitions || [];
+      const providedVariables = graphqlRequest.variables || {};
+      
+      const missingVariables: string[] = [];
+      
+      for (const varDef of variableDefinitions) {
+        const varName = varDef.variable.name.value;
+        const isRequired = varDef.type.kind === 'NonNullType';
+        
+        if (isRequired && !(varName in providedVariables)) {
+          missingVariables.push(varName);
+        }
+      }
+      
+      if (missingVariables.length > 0) {
+        return {
+          isValid: false,
+          errors: missingVariables.map(varName => ({
+            message: `Variable "$${varName}" of required type was not provided.`,
+            locations: []
+          }))
+        };
+      }
+      
+      return { isValid: true };
+      
+    } catch (error) {
+      return {
+        isValid: false,
+        errors: [{
+          message: `GraphQL syntax error: ${error instanceof Error ? error.message : 'Unknown error'}`,
+          locations: []
+        }]
+      };
+    }
+  }
+
+  /**
    * Process SSE subscription (shared logic for GET and POST)
    */
-  private async processSSESubscription(graphqlRequest: GraphQLRequest, res: ServerResponse, logger: Logger): Promise<void> {
-    // Parse and validate GraphQL document
-    const { GraphQLParser } = await import('../graphql/parser.js');
-    const parser = new GraphQLParser(logger);
+  private async processSSESubscription(
+    graphqlRequest: GraphQLRequest, 
+    res: ServerResponse, 
+    logger: Logger, 
+    requestHeaders?: Record<string, string>
+  ): Promise<void> {
+    // Validate the subscription before processing
+    const validation = await this.validateSubscription(graphqlRequest);
     
-    try {
-      const parsedOperation = parser.parseDocument(graphqlRequest.query);
-      parser.validateSubscription(parsedOperation);
+    if (!validation.isValid) {
+      logger.warn({ errors: validation.errors }, 'Subscription validation failed');
       
-      logger.debug({ 
-        operationType: parsedOperation.operationType,
-        operationName: parsedOperation.operationName,
-      }, 'Valid subscription received');
+      // Send validation error as JSON response
+      res.writeHead(400, {
+        'Content-Type': 'application/json',
+        'Access-Control-Allow-Origin': '*',
+        'Access-Control-Allow-Headers': 'Content-Type, Accept, Authorization, Cookie',
+        'Access-Control-Allow-Credentials': 'true',
+      });
       
-    } catch (parseError) {
-      logger.warn({ error: parseError }, 'Invalid subscription request');
-      
-      // Send error as JSON for invalid subscriptions
-      res.writeHead(400, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({
-        errors: [{
-          message: parseError instanceof Error ? parseError.message : 'Invalid subscription',
-          extensions: { code: 'INVALID_SUBSCRIPTION' }
-        }]
+        errors: validation.errors
       }));
+      
       return;
     }
+
+    logger.info('Subscription validation passed, establishing SSE connection');
     
-    // Set up SSE headers
+    // Set up SSE headers with enhanced compatibility for incognito mode
     res.writeHead(200, {
-      'Content-Type': 'text/event-stream',
-      'Cache-Control': 'no-cache',
+      'Content-Type': 'text/event-stream; charset=utf-8',
+      'Cache-Control': 'no-cache, no-store, must-revalidate',
+      'Pragma': 'no-cache',
+      'Expires': '0',
       'Connection': 'keep-alive',
       'X-Accel-Buffering': 'no', // Disable Nginx buffering
+      'Access-Control-Allow-Origin': '*',
+      'Access-Control-Allow-Headers': 'Content-Type, Accept, Authorization, Cookie',
+      'Access-Control-Allow-Credentials': 'true',
     });
     
-    // Send connection acknowledgment following GraphQL-SSE protocol
+    // Send initial connection event with explicit flush for incognito compatibility
+    res.write('retry: 10000\n'); // Set retry interval
     res.write('event: next\n');
     res.write('data: {"data":{"message":"Subscription established - waiting for events..."}}\n\n');
+    
+    // Force flush the initial event for incognito browsers
+    if ('flush' in res && typeof res.flush === 'function') {
+      (res as any).flush();
+    }
     
     // Generate unique subscription ID
     const subscriptionId = `sub_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
     
     try {
-      // Create subscription with the manager
+      // Create subscription with the manager, including request context
       await this.subscriptionManager.createSubscription(
         subscriptionId,
         graphqlRequest,
-        res
+        res,
+        requestHeaders ? { headers: requestHeaders } : undefined
       );
       
       logger.info({ subscriptionId }, 'Subscription created successfully');
@@ -451,7 +617,37 @@ export class HTTPServer {
   }
 
   /**
-   * Generate GraphiQL HTML template
+   * Load custom GraphiQL HTML from built bundle
+   */
+  private async loadCustomGraphiQLHTML(): Promise<string> {
+    try {
+      const htmlPath = join(__dirname, '../../dist/public/graphiql.html');
+      const html = await readFile(htmlPath, 'utf-8');
+      return html;
+    } catch (error) {
+      this.logger.error({ error }, 'Failed to load custom GraphiQL HTML');
+      // Fallback to simple HTML
+      return `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>WPGraphQL Subscriptions IDE - Loading Error</title>
+</head>
+<body>
+  <div style="padding: 20px; font-family: Arial, sans-serif;">
+    <h1>GraphiQL Loading Error</h1>
+    <p>The custom GraphiQL bundle could not be loaded. Please run:</p>
+    <code>npm run build:graphiql</code>
+    <p>Then restart the server.</p>
+  </div>
+</body>
+</html>`;
+    }
+  }
+
+  /**
+   * Generate GraphiQL HTML template (DEPRECATED - kept for fallback)
    */
   private generateGraphiQLHTML(): string {
     return `<!DOCTYPE html>
@@ -467,89 +663,190 @@ export class HTTPServer {
   
   <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
   <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+  <script src="https://unpkg.com/graphql@16/graphql.min.js"></script>
   <script src="https://unpkg.com/graphiql@3/graphiql.min.js"></script>
   
   <script>
     // Custom fetcher for GraphiQL with SSE subscription support
     function createCustomFetcher() {
+      console.log('GraphiQL: Custom fetcher created');
+      
       return async function fetcher(graphQLParams, opts) {
+        console.log('GraphiQL: Fetcher called with:', { graphQLParams, opts });
+        console.log('GraphiQL: Browser context:', {
+          userAgent: navigator.userAgent,
+          isIncognito: !window.indexedDB || !window.localStorage,
+          location: window.location.href
+        });
+        
         const { query, variables, operationName } = graphQLParams;
         
-        // Parse the query to determine operation type
+        console.log('GraphiQL: Raw query:', JSON.stringify(query));
+        console.log('GraphiQL: Operation name:', operationName);
+        
+        // Parse the query using GraphQL AST (much more robust than regex)
         let operationType = 'query'; // default
         try {
-          // Simple regex to detect operation type
-          const trimmed = query.trim();
-          const match = trimmed.match(/^\\s*(query|mutation|subscription)\\s/i);
-          if (match) {
-            operationType = match[1].toLowerCase();
+          console.log('GraphiQL: Parsing query with GraphQL AST...');
+          console.log('GraphiQL: GraphQL available:', typeof GraphQL);
+          
+          // Use GraphQL's parse function to create AST
+          const ast = GraphQL.parse(query);
+          console.log('GraphiQL: AST parsed successfully');
+          
+          // Find the operation definition
+          const operationDef = ast.definitions.find(def => 
+            def.kind === 'OperationDefinition'
+          );
+          
+          if (operationDef) {
+            operationType = operationDef.operation;
+            console.log('GraphiQL: Operation type from AST:', operationType);
+            
+            // Also log the operation name from AST if available
+            if (operationDef.name) {
+              console.log('GraphiQL: Operation name from AST:', operationDef.name.value);
+            }
+          } else {
+            console.warn('GraphiQL: No operation definition found in AST');
           }
-        } catch (e) {
-          // If parsing fails, assume it's a query
+          
+        } catch (parseError) {
+          console.error('GraphiQL: GraphQL parse error:', parseError);
+          console.log('GraphiQL: Falling back to enhanced regex detection...');
+          
+          // Enhanced regex fallback - more robust than before
+          try {
+            const trimmed = query.trim();
+            
+            // Remove comments and try to find operation type
+            const commentStripped = trimmed.replace(/^\\s*#[^\\n]*\\n/gm, '').trim();
+            
+            // Try multiple patterns
+            const patterns = [
+              /^\\s*(query|mutation|subscription)\\s+\\w+/i,  // with operation name
+              /^\\s*(query|mutation|subscription)\\s*\\{/i,    // anonymous
+              /^\\s*(query|mutation|subscription)\\s*\\(/i,    // with variables
+            ];
+            
+            for (const pattern of patterns) {
+              const match = commentStripped.match(pattern);
+              if (match) {
+                operationType = match[1].toLowerCase();
+                console.log('GraphiQL: Enhanced regex detected:', operationType, 'with pattern:', pattern);
+                break;
+              }
+            }
+            
+            // Final fallback: check operation name
+            if (operationType === 'query' && operationName && operationName.toLowerCase().includes('subscription')) {
+              operationType = 'subscription';
+              console.log('GraphiQL: Detected subscription from operation name:', operationName);
+            }
+            
+          } catch (regexError) {
+            console.error('GraphiQL: Enhanced regex fallback failed:', regexError);
+            
+            // Last resort: simple string search
+            if (query.toLowerCase().includes('subscription')) {
+              operationType = 'subscription';
+              console.log('GraphiQL: Final fallback - found "subscription" in query text');
+            }
+          }
         }
         
         if (operationType === 'subscription') {
-          // Handle subscription via SSE
-          return new Promise((resolve, reject) => {
-            let hasResolved = false;
+          // Handle subscription via SSE - return async generator that works in both modes
+          console.log('GraphiQL: Setting up subscription');
+          
+          return (async function* () {
+            console.log('GraphiQL: Starting async generator');
+            console.log('GraphiQL: Browser info:', {
+              userAgent: navigator.userAgent,
+              isIncognito: !window.indexedDB || !window.localStorage,
+              hasEventSource: !!window.EventSource
+            });
             
-            fetch('/graphql', {
-              method: 'POST',
-              headers: {
-                'Content-Type': 'application/json',
-                'Accept': 'text/event-stream',
-              },
-              body: JSON.stringify({ query, variables, operationName }),
-            }).then(response => {
+            let reader;
+            let isActive = true;
+            let eventCount = 0;
+            
+            try {
+              console.log('GraphiQL: Making fetch request...');
+              const response = await fetch('/graphql', {
+                method: 'POST',
+                headers: {
+                  'Content-Type': 'application/json',
+                  'Accept': 'text/event-stream',
+                  'Cache-Control': 'no-cache',
+                },
+                body: JSON.stringify({ query, variables, operationName }),
+              });
+              
+              console.log('GraphiQL: Response status:', response.status, response.statusText);
+              console.log('GraphiQL: Response headers:', Object.fromEntries(response.headers.entries()));
+              
               if (!response.ok) {
                 throw new Error(\`HTTP \${response.status}: \${response.statusText}\`);
               }
               
-              const reader = response.body.getReader();
+              reader = response.body.getReader();
               const decoder = new TextDecoder();
               
-              function readStream() {
-                reader.read().then(({ done, value }) => {
-                  if (done) {
-                    if (!hasResolved) {
-                      resolve({ data: null });
-                    }
-                    return;
-                  }
-                  
-                  const text = decoder.decode(value, { stream: true });
-                  const lines = text.split('\\n');
-                  
-                  for (const line of lines) {
-                    if (line.startsWith('data: ') && line.length > 6) {
-                      try {
-                        const data = JSON.parse(line.substring(6));
-                        if (!hasResolved) {
-                          hasResolved = true;
-                          resolve(data);
-                        }
-                        return;
-                      } catch (e) {
-                        // Ignore parsing errors for individual lines
+              console.log('GraphiQL: SSE connection established, starting to read...');
+              
+              while (isActive) {
+                const { done, value } = await reader.read();
+                
+                if (done) {
+                  console.log('GraphiQL: SSE stream ended after', eventCount, 'events');
+                  break;
+                }
+                
+                const text = decoder.decode(value, { stream: true });
+                console.log('GraphiQL: Raw SSE chunk:', JSON.stringify(text));
+                const lines = text.split('\\n');
+                
+                for (const line of lines) {
+                  if (line.startsWith('data: ') && line.length > 6) {
+                    try {
+                      const dataStr = line.substring(6);
+                      console.log('GraphiQL: Parsing SSE data:', dataStr);
+                      const data = JSON.parse(dataStr);
+                      
+                      // Skip the initial "Subscription established" message to keep spinner
+                      if (data.data && data.data.message && data.data.message.includes('Subscription established')) {
+                        console.log('GraphiQL: Skipping initial connection message to maintain spinner');
+                        continue;
                       }
+                      
+                      eventCount++;
+                      console.log('GraphiQL: Event #' + eventCount + ', yielding data:', data);
+                      yield data;
+                    } catch (e) {
+                      console.warn('GraphiQL: Failed to parse SSE data:', line, e);
                     }
+                  } else if (line.trim()) {
+                    console.log('GraphiQL: Non-data SSE line:', JSON.stringify(line));
                   }
-                  
-                  readStream(); // Continue reading
-                }).catch(reject);
+                }
               }
               
-              readStream();
-            }).catch(reject);
-            
-            // Timeout after 10 seconds
-            setTimeout(() => {
-              if (!hasResolved) {
-                hasResolved = true;
-                reject(new Error('Subscription timeout'));
+            } catch (error) {
+              console.error('GraphiQL: Subscription error:', error);
+              throw error;
+            } finally {
+              isActive = false;
+              if (reader) {
+                try {
+                  await reader.cancel();
+                  console.log('GraphiQL: SSE connection cleaned up');
+                } catch (e) {
+                  console.warn('GraphiQL: Error during cleanup:', e);
+                }
               }
-            }, 10000);
-          });
+            }
+          })();
         } else {
           // Handle queries and mutations via regular fetch to WPGraphQL
           const response = await fetch('/graphql', {
@@ -571,10 +868,18 @@ export class HTTPServer {
     }
     
     // Initialize GraphiQL
+    console.log('GraphiQL: Initializing GraphiQL component');
+    console.log('GraphiQL: React version:', React.version);
+    console.log('GraphiQL: ReactDOM available:', !!ReactDOM);
+    console.log('GraphiQL: GraphiQL constructor available:', !!GraphiQL);
+    
+    const customFetcher = createCustomFetcher();
+    console.log('GraphiQL: Custom fetcher created:', typeof customFetcher);
+    
     const root = ReactDOM.createRoot(document.getElementById('graphiql'));
     root.render(
       React.createElement(GraphiQL, {
-        fetcher: createCustomFetcher(),
+        fetcher: customFetcher,
         defaultQuery: \`# Welcome to GraphiQL for WPGraphQL Subscriptions!
 # 
 # This server only supports GraphQL subscriptions.
