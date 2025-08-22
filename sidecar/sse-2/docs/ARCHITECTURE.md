@@ -54,8 +54,9 @@ A minimal, focused GraphQL subscription server that follows the [GraphQL over Se
 
 ### 1. **HTTP Server**
 - Accept POST requests with `Accept: text/event-stream`
-- Validate GraphQL subscription operations
-- Establish SSE connections
+- Validate GraphQL subscription operations using AST parsing
+- Serve custom GraphiQL IDE with static file handling
+- Establish SSE connections with proper headers and compatibility
 
 ### 2. **Subscription Manager**
 - Store active subscription documents and metadata
@@ -77,13 +78,23 @@ A minimal, focused GraphQL subscription server that follows the [GraphQL over Se
 - Format events according to GraphQL-SSE protocol
 - Handle connection cleanup
 
+### 6. **Custom GraphiQL IDE**
+- React-based GraphiQL interface with TypeScript
+- Webpack build pipeline for production optimization
+- AST-based operation detection and validation
+- Cross-browser SSE subscription support with async iterators
+
 ## Data Flow
 
 ### 1. **Subscription Setup**
 ```
 Client Request (POST /graphql)
   ↓
-Validate: Is Subscription? ✓
+Parse: GraphQL AST with graphql-js
+  ↓
+Validate: Operation Type & Variables
+  ↓
+Reject: If Invalid (400 + Error JSON)
   ↓
 Extract: Document, Variables, Operation
   ↓
@@ -91,7 +102,7 @@ Store: Subscription in Manager
   ↓
 Subscribe: To Redis Channels
   ↓
-Establish: SSE Connection
+Establish: SSE Connection (200 + Event Stream)
 ```
 
 ### 2. **Event Processing**
@@ -128,9 +139,12 @@ Cleanup: Resources
 - Prevent unauthorized `rootValue` injection
 
 ### 2. **Request Validation**
-- Validate subscription documents
-- Sanitize variables and operation names
-- Rate limiting and connection limits
+- **GraphQL AST Parsing**: Use `graphql-js` for accurate syntax validation
+- **Operation Type Validation**: Ensure only subscription operations are accepted
+- **Variable Validation**: Check required variables before connection establishment
+- **Pre-execution Validation**: Prevent invalid SSE connections
+- **Sanitize variables and operation names**: Input sanitization
+- **Rate limiting and connection limits**: Connection management
 
 ### 3. **Channel Security**
 - Map subscription fields to specific Redis channels
