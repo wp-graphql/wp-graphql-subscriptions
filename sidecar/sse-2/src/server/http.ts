@@ -1036,17 +1036,8 @@ subscription PostUpdated($id: ID!) {
         return;
       }
 
-      // Map WordPress event to subscription type
-      const subscriptionType = this.mapWordPressEventToSubscription(node_type, action);
-      if (!subscriptionType) {
-        logger.warn({ node_type, action }, 'Unknown subscription type for WordPress event');
-        res.writeHead(200, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ 
-          status: 'ignored', 
-          reason: 'unknown_subscription_type' 
-        }));
-        return;
-      }
+      // For logging purposes only - not used for channel calculation
+      const subscriptionType = this.mapWordPressEventToSubscription(node_type, action) || `${node_type}${action}`;
 
       // Get Redis client (we'll need to initialize this in the constructor)
       if (!this.redisClient) {
@@ -1059,9 +1050,48 @@ subscription PostUpdated($id: ID!) {
         return;
       }
 
-      // Build Redis channels (both specific and global)
-      const { ChannelBuilder } = await import('../subscription/channels.js');
-      const channels = ChannelBuilder.buildMultiple(subscriptionType, { id: node_id });
+      // Use WordPress-provided channels for true schema-agnostic design
+      let channels: string[] = [];
+      
+      if (eventData.channels && Array.isArray(eventData.channels)) {
+        // WordPress provided explicit channels - use them directly (schema-agnostic!)
+        channels = eventData.channels;
+        logger.info({ 
+          provided_channels: channels.length,
+          channels: channels 
+        }, 'Using WordPress-provided channels (schema-agnostic mode)');
+      } else {
+        // Fallback: calculate channels using the old method for backwards compatibility
+        const { ChannelBuilder } = await import('../subscription/channels.js');
+        
+        // For comment events, use the post_id instead of comment_id for channel routing
+        let channelArgs: Record<string, any> = { id: node_id };
+        if (node_type === 'comment' && context?.post_id) {
+          // Comments are routed by the post they belong to, not the comment ID
+          channelArgs = { id: context.post_id };
+          logger.debug({ 
+            comment_id: node_id, 
+            post_id: context.post_id 
+          }, 'Using post_id for comment channel routing');
+        }
+        
+        const fallbackSubscriptionType = this.mapWordPressEventToSubscription(node_type, action);
+        if (fallbackSubscriptionType) {
+          channels = ChannelBuilder.buildMultiple(fallbackSubscriptionType, channelArgs);
+        } else {
+          logger.error({ node_type, action }, 'Unknown subscription type and no channels provided');
+          res.writeHead(400, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ 
+            error: 'Unknown subscription type',
+            message: 'WordPress must provide channels or use known subscription types'
+          }));
+          return;
+        }
+        logger.warn({ 
+          fallback_channels: channels.length,
+          channels: channels 
+        }, 'Using fallback channel calculation - WordPress should provide channels');
+      }
       
       logger.info({ subscriptionType, node_id, channels }, 'Publishing to Redis channels');
       
@@ -1128,7 +1158,7 @@ subscription PostUpdated($id: ID!) {
         'DELETE': 'userDeleted',
       },
       'comment': {
-        'CREATE': 'commentCreated',
+        'CREATE': 'commentAdded',
         'UPDATE': 'commentUpdated',
         'DELETE': 'commentDeleted',
       },

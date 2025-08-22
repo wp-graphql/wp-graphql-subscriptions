@@ -45,16 +45,13 @@ class WPGraphQL_Event_Emitter {
             ], $metadata ),
         ];
         
-        // Determine the subscription event type based on node type and action
-        $subscription_event_type = self::get_subscription_event_type( $node_type, $action );
-        
         // Log the event for debugging
         error_log( 
             sprintf( 
-                'WPGraphQL Subscriptions: Emitted %s event for %s #%d', 
-                $subscription_event_type,
+                'WPGraphQL Subscriptions: Emitted %s.%s event for node #%d', 
                 $node_type,
-                $node_id 
+                $action,
+                $node_id
             ) 
         );
         
@@ -68,40 +65,18 @@ class WPGraphQL_Event_Emitter {
             'post_id_from_context' => isset( $event_payload['context']['post'] ) ? $event_payload['context']['post']->ID : 'missing'
         ]));
         
-        // Process the event for active subscriptions
-        // self::process_event_for_subscriptions( $subscription_event_type, $event_payload );
-        
         /**
-         * Action hook to allow other plugins to listen for subscription events.
+         * Generic action hook for any plugin to listen for WordPress events.
+         * The payload is completely generic and schema-agnostic.
          * 
-         * @param string $subscription_event_type The subscription event type (e.g., 'postUpdated').
-         * @param array  $event_payload           The complete standardized event payload.
+         * @param string $node_type The WordPress node type (post, comment, user, etc.)
+         * @param string $action The action performed (CREATE, UPDATE, DELETE)
+         * @param array  $event_payload The complete standardized event payload
          */
-        do_action( 'graphql_subscription_event', $subscription_event_type, $event_payload );
+        do_action( 'wpgraphql_generic_event', $node_type, $action, $event_payload );
     }
 
-        /**
-     * Get the subscription event type based on node type and action.
-     * 
-     * This method maps internal node types and actions to GraphQL subscription
-     * event types that clients will listen for.
-     * 
-     * @param string $node_type The internal node type.
-     * @param string $action    The action performed.
-     * @return string The subscription event type.
-     */
-    private static function get_subscription_event_type( $node_type, $action ) {
-        
-        // Map actions to subscription event suffixes
-        $action_map = [
-            'CREATE' => 'Created',
-            'UPDATE' => 'Updated', 
-            'DELETE' => 'Deleted',
-        ];
-        
-        // Build the subscription event type (e.g., postUpdated, userCreated)
-        $event_suffix = $action_map[ $action ] ?? 'Changed';
-        return $node_type . $event_suffix;
-    }
+
+
 
 }

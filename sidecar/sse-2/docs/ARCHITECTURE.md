@@ -21,6 +21,45 @@ A minimal, focused GraphQL subscription server that follows the [GraphQL over Se
 - Simple HTTP server with SSE capabilities
 - Focus on coordination, not execution
 
+## Universal Event Bus Integration
+
+SSE-2 is designed as a **schema-agnostic infrastructure component** that consumes events from WordPress's universal event bus:
+
+```mermaid
+graph TD
+    subgraph "WordPress Universal Event Bus"
+        WP["WordPress Events<br/>(post_updated, comment_post)"] --> Emitter["WPGraphQL_Event_Emitter<br/>Generic Events"]
+        Emitter --> Mapper["GraphQL Channel Mapper<br/>Schema-Aware Translation"]
+    end
+    
+    subgraph "SSE-2 Server (Schema-Agnostic)"
+        Mapper --> |"{ channels: [...] }"| SSE["SSE-2 HTTP Server<br/>✅ Zero Schema Knowledge"]
+        SSE --> Redis["Redis Pub/Sub<br/>Channel Distribution"]
+        Redis --> Clients["GraphQL Clients<br/>Real-time Updates"]
+    end
+    
+    subgraph "Other Consumers"
+        Emitter -.-> Cache["Smart Cache<br/>Varnish Purging"]
+        Emitter -.-> Debug["Debug Webhooks<br/>Event Monitoring"]
+        Emitter -.-> Analytics["Analytics<br/>Content Tracking"]
+    end
+    
+    classDef wp fill:#e3f2fd,stroke:#2196f3,color:#000
+    classDef sse fill:#e8f5e8,stroke:#4caf50,color:#000
+    classDef other fill:#f3e5f5,stroke:#9c27b0,color:#000
+    
+    class WP,Emitter,Mapper wp
+    class SSE,Redis,Clients sse
+    class Cache,Debug,Analytics other
+```
+
+### Key Benefits of This Design
+
+1. **🔄 Schema-Agnostic**: SSE-2 has zero knowledge of GraphQL schema - it just publishes to channels
+2. **🔌 Reusable Infrastructure**: The same event bus powers cache invalidation, analytics, etc.
+3. **⚡ True Decoupling**: Adding new subscription types requires zero SSE-2 server changes
+4. **🎯 Single Responsibility**: SSE-2 only handles infrastructure; business logic stays in WordPress
+
 ## Architecture Overview
 
 ```

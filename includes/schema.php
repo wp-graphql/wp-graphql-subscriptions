@@ -95,6 +95,88 @@ add_action( 'graphql_register_types', function() {
             return null;
         }
     ]);
+
+    register_graphql_field( 'RootSubscription', 'commentAdded', [
+        'description' => __( 'Subscription for new comments on a specific node (post, page, custom post type, etc).', 'wpgraphql-subscriptions' ),
+        'type'        => 'Comment',
+        'args'        => [
+            'nodeId' => [
+                'type'        => 'ID',
+                'description' => __( 'The ID of the node to subscribe to comments for.', 'wpgraphql-subscriptions' ),
+            ],
+        ],
+        'resolve' => function( $root, $args, $context, $info ) {
+            // This resolver is called when the subscription is executed
+            // For subscriptions, the actual data comes from the SSE stream events
+            
+            // Debug logging
+            error_log( 'WPGraphQL-SSE: commentAdded resolver called' );
+            error_log( 'WPGraphQL-SSE: Args: ' . json_encode( $args ) );
+            error_log( 'WPGraphQL-SSE: Root type: ' . gettype( $root ) );
+            if ( is_array( $root ) ) {
+                error_log( 'WPGraphQL-SSE: Root keys: ' . implode( ', ', array_keys( $root ) ) );
+            }
+            
+            // Get the requested node ID from subscription arguments
+            $requested_node_id = isset( $args['nodeId'] ) ? absint( $args['nodeId'] ) : null;
+            error_log( "WPGraphQL-SSE: Requested node ID: {$requested_node_id}" );
+            
+            // If we have event data from the subscription, extract the comment data
+            if ( isset( $root['commentAdded'] ) ) {
+                $event_data = $root['commentAdded'];
+                error_log( 'WPGraphQL-SSE: Found commentAdded event in root' );
+                error_log( 'WPGraphQL-SSE: Event data type: ' . ( is_object( $event_data ) ? get_class( $event_data ) : gettype( $event_data ) ) );
+                
+                // Extract comment data from the standardized event format
+                $comment_data = null;
+                if ( is_array( $event_data ) && isset( $event_data['comment'] ) ) {
+                    // Standard event format: { id, action, timestamp, comment: { ... } }
+                    $comment_data = $event_data['comment'];
+                    error_log( 'WPGraphQL-SSE: Using comment data from event.comment' );
+                } elseif ( is_array( $event_data ) && isset( $event_data['comment_ID'] ) ) {
+                    // Direct comment data format
+                    $comment_data = $event_data;
+                    error_log( 'WPGraphQL-SSE: Using event data directly as comment data' );
+                } elseif ( is_object( $event_data ) && isset( $event_data->comment_ID ) ) {
+                    // WP_Comment object directly
+                    $comment_data = $event_data;
+                    error_log( 'WPGraphQL-SSE: Using WP_Comment object directly' );
+                }
+                
+                if ( $comment_data ) {
+                    // Convert array to WP_Comment object if needed
+                    if ( is_array( $comment_data ) && isset( $comment_data['comment_ID'] ) ) {
+                        $comment = get_comment( $comment_data['comment_ID'] );
+                        if ( $comment && ! is_wp_error( $comment ) ) {
+                            $comment_data = $comment;
+                        }
+                    }
+                    
+                    // If we have a WP_Comment object, check if it matches the requested node ID
+                    if ( is_object( $comment_data ) && isset( $comment_data->comment_ID ) ) {
+                        error_log( "WPGraphQL-SSE: WP_Comment object found, ID: {$comment_data->comment_ID}, Node ID: {$comment_data->comment_post_ID}" );
+                        
+                        // Filter: only return if this comment is for the subscribed node
+                        if ( $requested_node_id && $comment_data->comment_post_ID != $requested_node_id ) {
+                            error_log( "WPGraphQL-SSE: Comment node ID {$comment_data->comment_post_ID} does not match requested node ID {$requested_node_id}, filtering out" );
+                            return null;
+                        }
+                        
+                        error_log( "WPGraphQL-SSE: Comment node ID matches, returning WPGraphQL Comment Model" );
+                        return new \WPGraphQL\Model\Comment( $comment_data );
+                    }
+                }
+                
+                error_log( 'WPGraphQL-SSE: Event data found but could not extract valid comment data' );
+            } else {
+                error_log( 'WPGraphQL-SSE: No commentAdded event data found in root' );
+            }
+            
+            // For initial subscription setup, return null
+            error_log( 'WPGraphQL-SSE: Returning null from resolver' );
+            return null;
+        }
+    ]);
 });
 
 /**

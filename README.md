@@ -9,6 +9,48 @@ An experimental WordPress plugin that adds GraphQL Subscriptions support to WPGr
 
 This plugin extends WPGraphQL to support GraphQL Subscriptions, allowing clients to receive real-time updates when WordPress content changes. It provides a reference implementation for real-time messaging in WordPress using native WordPress technologies (no external services required).
 
+## Architecture: Universal Event Bus
+
+The plugin is built around a **universal WordPress event bus** that can power multiple systems:
+
+```mermaid
+graph TD
+    subgraph "WordPress Core Events"
+        WP["WordPress Hooks<br/>post_updated, comment_post, etc."] --> Emitter["WPGraphQL_Event_Emitter<br/>✅ Generic & Reusable"]
+    end
+    
+    subgraph "Multiple Consumers"
+        Emitter --> |"wpgraphql_generic_event"| GraphQL["GraphQL Subscription<br/>Channel Mapper<br/>→ SSE-2 Server"]
+        Emitter --> |"wpgraphql_generic_event"| Cache["WPGraphQL Smart Cache<br/>→ Varnish Purging"]
+        Emitter --> |"wpgraphql_generic_event"| Debug["Debug Webhook<br/>→ webhook.site"]
+        Emitter --> |"wpgraphql_generic_event"| Analytics["Analytics System<br/>→ Track Content Changes"]
+        Emitter --> |"wpgraphql_generic_event"| Custom["Custom Plugin<br/>→ Any Use Case"]
+    end
+    
+    subgraph "Downstream Systems"
+        GraphQL --> SSE["SSE-2 Server<br/>Real-time Subscriptions"]
+        Cache --> Varnish["Varnish Cache<br/>Smart Purging"]
+        Debug --> WebhookSite["webhook.site<br/>Event Debugging"]
+        Analytics --> Dashboard["Analytics Dashboard<br/>Content Insights"]
+        Custom --> Integration["3rd Party Integration<br/>Zapier, etc."]
+    end
+    
+    classDef core fill:#e3f2fd,stroke:#2196f3,color:#000
+    classDef consumers fill:#f3e5f5,stroke:#9c27b0,color:#000
+    classDef systems fill:#e8f5e8,stroke:#4caf50,color:#000
+    
+    class WP,Emitter core
+    class GraphQL,Cache,Debug,Analytics,Custom consumers
+    class SSE,Varnish,WebhookSite,Dashboard,Integration systems
+```
+
+### Key Benefits
+
+- **🔄 Reusable Event System**: The `WPGraphQL_Event_Emitter` creates generic WordPress events that any plugin can consume
+- **🎯 Separation of Concerns**: GraphQL subscriptions are just one consumer of the universal event bus
+- **🔌 Plugin Ecosystem**: Other plugins can hook into `wpgraphql_generic_event` for cache invalidation, analytics, webhooks, etc.
+- **⚡ Schema-Agnostic SSE Server**: The SSE-2 server has zero schema knowledge - it just publishes to whatever channels WordPress provides
+
 ## 🚀 Quick Demo
 
 Want to see GraphQL subscriptions in action? After installing the plugin:

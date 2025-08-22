@@ -184,8 +184,9 @@ export default function CustomGraphiQL() {
       defaultQuery={`# Welcome to WPGraphQL Subscriptions IDE!
 # 
 # This custom GraphiQL interface supports real-time GraphQL subscriptions.
-# Try this example subscription:
+# Try these example subscriptions:
 
+# 1. Subscribe to post updates
 subscription PostUpdated($id: ID!) {
   postUpdated(id: $id) {
     id
@@ -200,11 +201,36 @@ subscription PostUpdated($id: ID!) {
   }
 }
 
-# Variables:
+# 2. Subscribe to new comments on any node (post, page, etc)
+subscription CommentAdded($nodeId: ID!) {
+  commentAdded(nodeId: $nodeId) {
+    id
+    content
+    date
+    author {
+      node {
+        name
+        email
+      }
+    }
+    commentedOn {
+      node {
+        id
+        title
+      }
+    }
+  }
+}
+
+# Variables for post updates:
 # { "id": "147" }
 
-# After running the subscription, edit post 147 in WordPress
-# to see real-time updates appear here!`}
+# Variables for comment subscription:
+# { "nodeId": "147" }
+
+# After running a subscription:
+# - For posts: Edit post 147 in WordPress to see updates
+# - For comments: Add a comment to node 147 (post/page/etc) to see new comments`}
     />
   );
 }

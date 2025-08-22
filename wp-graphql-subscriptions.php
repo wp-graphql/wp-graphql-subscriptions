@@ -33,6 +33,12 @@ require_once __DIR__ . '/includes/class-wpgraphql-event-emitter.php';
 // Include the Event Queue class.
 require_once __DIR__ . '/includes/class-wpgraphql-event-queue.php';
 
+// Include the Subscription Registration API.
+require_once __DIR__ . '/includes/subscription-registration.php';
+
+// Include the GraphQL subscription channel mapper.
+require_once __DIR__ . '/includes/class-wpgraphql-subscription-channel-mapper.php';
+
 // Include the Subscription Storage interface.
 require_once __DIR__ . '/includes/interface-wpgraphql-subscription-storage.php';
 
@@ -103,6 +109,13 @@ add_action('wpgraphql_subscription_cleanup', function() {
     if ($cleaned > 0) {
         error_log("WPGraphQL Subscriptions: Scheduled cleanup removed {$cleaned} expired connections");
     }
+});
+
+/**
+ * Initialize the GraphQL subscription channel mapper
+ */
+add_action('init', function() {
+    WPGraphQL_Subscription_Channel_Mapper::init();
 });
 
 /**
